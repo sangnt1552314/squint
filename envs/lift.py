@@ -57,6 +57,7 @@ class Lift(DefaultCameraEnv):
         self,
         *args,
         item_type="cube",
+        item_color=None,
         robot_uids="so101",
         control_mode="pd_joint_target_delta_pos",
         domain_randomization_config: Union[
@@ -68,6 +69,8 @@ class Lift(DefaultCameraEnv):
         **kwargs,
     ):
         self.item_type = item_type
+        # Optional RGB (0-1) override for the item's visual color
+        self.item_color = item_color
 
         # Robot-specific configuration
         if robot_uids == "so100":
@@ -201,6 +204,10 @@ class Lift(DefaultCameraEnv):
             self.item_half_heights = common.to_tensor(half_heights, device=self.device)
             self.item_half_sizes = self.item_half_heights  # For z-position in _initialize_episode
             self.item_dimensions = torch.stack([self.item_half_radii, self.item_half_radii, self.item_half_heights], dim=-1)
+
+        # Explicit color override (e.g. black cube) takes priority over the per-type default
+        if self.item_color is not None:
+            colors[:, :] = np.asarray(self.item_color, dtype=colors.dtype)
 
         colors = np.concatenate([colors, np.ones((self.num_envs, 1))], axis=-1)
         self.item_frictions = common.to_tensor(frictions, device=self.device)
@@ -413,3 +420,14 @@ class LiftCube(Lift):
 class LiftCan(Lift):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, item_type="can", **kwargs)
+
+@register_env("SO101LiftBlackCube-v1", max_episode_steps=50)
+class LiftBlackCube(Lift):
+    """Same as SO101LiftCube-v1 but the cube is black instead of red."""
+
+    # Near-black; bump this up if the cube becomes indistinguishable from the
+    # black background overlay (envs/black_overlay.png).
+    CUBE_COLOR = (0.05, 0.05, 0.05)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, item_type="cube", item_color=self.CUBE_COLOR, **kwargs)

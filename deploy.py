@@ -39,7 +39,6 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from mani_skill.envs.sim2real_env import Sim2RealEnv
-from mani_skill.utils.wrappers.flatten import FlattenRGBDObservationWrapper
 from mani_skill.sensors.camera import CameraConfig
 from mani_skill.utils import common
 from mani_skill.utils.visualization import tile_images
@@ -48,6 +47,8 @@ from mani_skill.utils.visualization import tile_images
 from deploy_utils.manipulator import LeRobotRealAgent
 from deploy_utils.robot_config import create_real_robot
 
+import utils
+from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_CAMERA_NAMES, POLICY_RGB_KEYS
 from train_squint import DeployAgent
 
 # ============================================================
@@ -81,7 +82,9 @@ class Args:
     seed: int = 1
     """Random seed for reproducibility."""
     image_size: int = 128
-    """HxW of input image to agent"""
+    """HxW the real/sim cameras are rendered at before policy downsampling"""
+    policy_image_size: int = 16
+    """HxW of the image fed to the policy (must match --image_size used in training)"""
 
     # Wandb checkpoint download settings (only used when checkpoint='wandb')
     wandb_entity: Optional[str] = None  # CHANGE THIS: your wandb username/entity
@@ -96,12 +99,12 @@ class Args:
 # ============================================================
 
 
-def create_wrist_camera_preprocessor(sim_env):
-    """Create a preprocessing function for the wrist camera images.
+def create_camera_preprocessor(sim_env):
+    """Create a preprocessing function for the real camera images.
 
-    Handles:
+    Runs independently for every policy camera (wrist and/or third-view). Handles:
     - Cropping to square aspect ratio
-    - Resizing to match simulation camera resolution
+    - Resizing to match that camera's simulation resolution
 
     Args:
         sim_env: The base simulation environment (unwrapped)
@@ -177,21 +180,43 @@ def setup_safe_exit(sim_env, real_env, real_agent, recorder=None):
     atexit.register(cleanup)
 
 
-def overlay_envs(sim_env, real_env):
-    """Overlay sim and real observations for visual debugging."""
+def _label(img: np.ndarray, text: str) -> np.ndarray:
+    """Draw a readable label in the top-left corner of a float [0,1] RGB image."""
+    img = np.ascontiguousarray(img)
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+    cv2.putText(img, text, (5, 18), font, scale, (0.0, 0.0, 0.0), thick + 2, cv2.LINE_AA)
+    cv2.putText(img, text, (5, 18), font, scale, (1.0, 1.0, 1.0), thick, cv2.LINE_AA)
+    return img
+
+
+def build_debug_view(sim_env, real_env, cell_size: int = 192) -> np.ndarray:
+    """Build one 'real | sim | overlay' row per policy camera, stacked vertically.
+
+    For CAMERA_TYPE="wrist_third" this yields:
+        row 0: wrist_camera  real | sim | overlay
+        row 1: third_camera  real | sim | overlay
+    """
     real_obs = real_env.unwrapped.get_obs()["sensor_data"]
     sim_obs = sim_env.unwrapped.get_obs()["sensor_data"]
 
-    assert sorted(real_obs.keys()) == sorted(sim_obs.keys()), \
-        f"Camera mismatch: real={real_obs.keys()}, sim={sim_obs.keys()}"
+    rows = []
+    for name in POLICY_CAMERA_NAMES:
+        if name not in real_obs or name not in sim_obs:
+            raise KeyError(
+                f"Camera '{name}' missing (real={sorted(real_obs)}, sim={sorted(sim_obs)})"
+            )
+        real_img = real_obs[name]["rgb"][0].cpu().numpy().astype(np.float32) / 255
+        sim_img = sim_obs[name]["rgb"][0].cpu().numpy().astype(np.float32) / 255
+        real_img = cv2.resize(real_img, (cell_size, cell_size))
+        sim_img = cv2.resize(sim_img, (cell_size, cell_size))
+        overlay = 0.5 * real_img + 0.5 * sim_img
+        rows.append(np.hstack([
+            _label(real_img, f"{name} real"),
+            _label(sim_img, f"{name} sim"),
+            _label(overlay, f"{name} overlay"),
+        ]))
 
-    overlaid_imgs = []
-    for name in sim_obs:
-        real_img = real_obs[name]["rgb"][0] / 255
-        sim_img = sim_obs[name]["rgb"][0].cpu() / 255
-        overlaid_imgs.append(0.5 * real_img + 0.5 * sim_img)
-
-    return tile_images(overlaid_imgs), real_img, sim_img
+    return np.clip(np.vstack(rows), 0, 1)
 
 
 def print_timing_stats(timing_stats: dict, episode_num: int, target_freq: int):
@@ -254,8 +279,8 @@ def extract_recording_frame(real_obs: dict) -> Optional[np.ndarray]:
     Looks for the first RGB image in the observation dict.
     Returns a uint8 BGR numpy array, or None if no image found.
     """
-    for key in real_obs:
-        if "rgb" in key or "image" in key:
+    for key in list(POLICY_RGB_KEYS) + list(real_obs.keys()):
+        if key in real_obs and ("rgb" in key or "image" in key):
             img = real_obs[key]
             if isinstance(img, torch.Tensor):
                 img = img.cpu().numpy()
@@ -394,7 +419,8 @@ def main(args: Args):
     )
 
     sim_env = gym.make(args.env_id, **env_kwargs)
-    sim_env = FlattenRGBDObservationWrapper(sim_env, rgb=True, depth=False, state=True)
+    # Same wrapper as training: one obs key per policy camera, selected by name
+    sim_env = utils.MultiCameraObsWrapper(sim_env, camera_to_key=POLICY_CAMERAS)
 
     # Async recorder for recording videos
     recorder = None
@@ -405,7 +431,7 @@ def main(args: Args):
             resolution=args.record_resolution,
         )
 
-    preprocessor = create_wrist_camera_preprocessor(sim_env.unwrapped)
+    preprocessor = create_camera_preprocessor(sim_env.unwrapped)
     real_env = Sim2RealEnv(
         sim_env=sim_env,
         agent=real_agent,
@@ -417,7 +443,8 @@ def main(args: Args):
     sim_obs, _ = sim_env.reset()
     real_obs, _ = real_env.reset()
 
-    print("\nObservation shapes:")
+    print(f"\nCamera type: {CAMERA_TYPE}, policy cameras: {dict(POLICY_CAMERAS)}")
+    print("Observation shapes:")
     for k in sim_obs.keys():
         print(f"  {k}: sim={sim_obs[k].shape}, real={real_obs[k].shape}")
 
@@ -429,7 +456,7 @@ def main(args: Args):
     print("\nLoading agent...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    agent = DeployAgent(sim_env, sample_obs=real_obs)
+    agent = DeployAgent(sim_env, sample_obs=real_obs, target_image_size=args.policy_image_size)
 
     if args.checkpoint:
         seed_to_use = args.seed
@@ -462,16 +489,14 @@ def main(args: Args):
     # Phase 3: Debug Visualization Setup 
     # --------------------------------------------------
     if args.debug:
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(6, 12))
+        num_cams = len(POLICY_CAMERA_NAMES)
+        fig, ax = plt.subplots(1, 1, figsize=(9, 3 * num_cams))
         fig.canvas.mpl_disconnect(fig.canvas.manager.key_press_handler_id)
 
-        overlaid, real_img, sim_img = overlay_envs(sim_env, real_env)
-        im1 = ax1.imshow(overlaid)
-        ax1.set_title('Overlaid (Sim + Real)')
-        im2 = ax2.imshow(sim_img)
-        ax2.set_title('Simulation')
-        im3 = ax3.imshow(real_img)
-        ax3.set_title('Real')
+        debug_img = build_debug_view(sim_env, real_env)
+        im_debug = ax.imshow(debug_img)
+        ax.set_title('Real | Sim | Overlay  (one row per policy camera)')
+        ax.axis('off')
         plt.tight_layout()
 
     # --------------------------------------------------
@@ -536,13 +561,10 @@ def main(args: Args):
                         recorder.push(frame)
 
                 if args.debug:
-                    # Step sim env with zero action to update wrist camera (qpos already synced)
+                    # Step sim env with zero action to update the mounted cameras (qpos already synced)
                     sim_env.step(np.zeros_like(scaled_action))
 
-                    overlaid, real_img, sim_img = overlay_envs(sim_env, real_env)
-                    im1.set_data(overlaid)
-                    im2.set_data(sim_img)
-                    im3.set_data(real_img)
+                    im_debug.set_data(build_debug_view(sim_env, real_env))
                     fig.canvas.draw()
                     fig.canvas.flush_events()
                     plt.pause(0.001)

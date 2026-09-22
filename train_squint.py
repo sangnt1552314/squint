@@ -19,7 +19,7 @@ import glob
 from typing import Optional
 
 from mani_skill.utils import gym_utils
-from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper, FlattenRGBDObservationWrapper
+from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
@@ -41,6 +41,7 @@ import envs
 import mani_skill.envs
 
 import utils
+from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_RGB_KEYS
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -174,7 +175,9 @@ def evaluate(args, eval_envs, get_action_fn, logger, eval_output_dir, max_episod
 
     for _ in range(max_episode_steps):
         with torch.no_grad():
-            eval_action = get_action_fn(eval_obs['rgb'], eval_obs['state'])
+            eval_action = get_action_fn(
+                tuple(eval_obs[k] for k in POLICY_RGB_KEYS), eval_obs['state']
+            )
             eval_obs, _, _, _, eval_infos = eval_envs.step(eval_action)
             if "final_info" in eval_infos:
                 mask = eval_infos["_final_info"]
@@ -260,12 +263,53 @@ class CNNEncoder(nn.Module):
         return self.conv(obs)
 
 
-class Projection(nn.Module):
-    def __init__(self, n_obs, n_state, device=None):
+class SingleViewEncoder(CNNEncoder):
+    """CNNEncoder with the multi-view tuple interface.
+
+    Parameter names are identical to CNNEncoder, so single-camera checkpoints
+    saved before dual-camera support still load unchanged.
+    """
+
+    def forward(self, rgbs):
+        return super().forward(rgbs[0])
+
+
+class MultiViewEncoder(nn.Module):
+    """One independent CNNEncoder per policy camera; features concatenated.
+
+    Weights are NOT shared between views. The view order is fixed at construction
+    so the forward pass is fully static (safe for torch.compile / cudagraphs).
+    """
+
+    def __init__(self, n_obs, view_names, device=None):
         super().__init__()
-        self.repr_dim = 50 + 256
+        self.view_names = tuple(view_names)
+        for name in self.view_names:
+            self.add_module(f"{name}_encoder", CNNEncoder(n_obs, device=device))
+        self.repr_dim = sum(self.get_submodule(f"{n}_encoder").repr_dim for n in self.view_names)
+
+    def forward(self, rgbs):
+        feats = [
+            self.get_submodule(f"{name}_encoder")(rgb)
+            for name, rgb in zip(self.view_names, rgbs)
+        ]
+        return torch.cat(feats, dim=-1)
+
+
+def make_visual_encoder(n_obs, view_names, device=None):
+    """Build the visual encoder for the configured policy cameras."""
+    view_names = tuple(view_names)
+    if len(view_names) == 1:
+        return SingleViewEncoder(n_obs, device=device)
+    return MultiViewEncoder(n_obs, view_names, device=device)
+
+
+class Projection(nn.Module):
+    def __init__(self, n_obs, n_state, rgb_proj_dim=50, device=None):
+        super().__init__()
+        self.repr_dim = rgb_proj_dim + 256
         self.rgb_proj = nn.Sequential(
-            nn.Linear(n_obs, 50, device=device), nn.LayerNorm(50, device=device), nn.Tanh(),
+            nn.Linear(n_obs, rgb_proj_dim, device=device), nn.LayerNorm(rgb_proj_dim, device=device), nn.Tanh(),
         )
         self.state_proj = nn.Sequential(
             nn.Linear(n_state, 256, device=device), nn.LayerNorm(256, device=device), nn.ReLU(),
@@ -276,12 +320,12 @@ class Projection(nn.Module):
 
 
 class Actor(nn.Module):
-    def __init__(self, env, n_obs, n_state, n_act, device=None):
+    def __init__(self, env, n_obs, n_state, n_act, rgb_proj_dim=50, device=None):
         super().__init__()
         hidden_dim = 256
         activ = nn.ReLU
 
-        self.proj = Projection(n_obs, n_state, device=device)
+        self.proj = Projection(n_obs, n_state, rgb_proj_dim=rgb_proj_dim, device=device)
         self.fc = nn.Sequential(
             nn.Linear(self.proj.repr_dim, hidden_dim, device=device), nn.LayerNorm(hidden_dim, device=device), activ(),
             nn.Linear(hidden_dim, hidden_dim, device=device), nn.LayerNorm(hidden_dim, device=device), activ(),
@@ -333,7 +377,7 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
     """Distributional C51 Ensemble-Q-network critic with vmap optimizations."""
-    def __init__(self, n_obs, n_state, n_act, num_atoms, v_min, v_max, num_q=2, device=None):
+    def __init__(self, n_obs, n_state, n_act, num_atoms, v_min, v_max, num_q=2, rgb_proj_dim=50, device=None):
         super().__init__()
         self.num_atoms = num_atoms
         self.num_q = num_q
@@ -341,7 +385,7 @@ class Critic(nn.Module):
         self.v_max = v_max
         self.q_support = torch.linspace(v_min, v_max, num_atoms, device=device)
 
-        self.proj = Projection(n_obs, n_state, device=device)
+        self.proj = Projection(n_obs, n_state, rgb_proj_dim=rgb_proj_dim, device=device)
         self.proj.apply(weight_init)
 
         q_input_dim = self.proj.repr_dim + n_act
@@ -453,6 +497,29 @@ class Critic(nn.Module):
 #  Deployment Wrapper
 # ─────────────────────────────────────────────────────────────────────────────
 
+def check_checkpoint_camera_config(ckpt, source):
+    """Fail loudly when a checkpoint was trained with a different camera setup.
+
+    A wrist-only checkpoint has a different visual encoder (and projection input dim)
+    than a wrist+third checkpoint, so loading one into the other is never valid.
+    """
+    ckpt_keys = ckpt.get("rgb_keys")
+    ckpt_type = ckpt.get("camera_type")
+    if ckpt_keys is None:
+        # Pre-dual-camera checkpoints only ever had a single "rgb" view
+        ckpt_keys = ["rgb"]
+        ckpt_type = ckpt_type or "<legacy single-camera>"
+    if tuple(ckpt_keys) != tuple(POLICY_RGB_KEYS):
+        raise RuntimeError(
+            f"Checkpoint '{source}' is incompatible with the current camera configuration.\n"
+            f"  checkpoint: CAMERA_TYPE={ckpt_type}, views={tuple(ckpt_keys)}\n"
+            f"  current:    CAMERA_TYPE={CAMERA_TYPE}, views={tuple(POLICY_RGB_KEYS)}\n"
+            f"The visual encoder architecture differs (one CNN encoder per camera), so the "
+            f"weights cannot be reused. Set CAMERA_TYPE in envs/base_random_env.py to "
+            f"'{ckpt_type}' to use this checkpoint, or train a new one for '{CAMERA_TYPE}'."
+        )
+
+
 class DeployAgent(nn.Module):
     """Standalone deployment wrapper for deploy.py file. Handles downsampling and inference."""
 
@@ -460,15 +527,17 @@ class DeployAgent(nn.Module):
         super().__init__()
         self.device = device
         self.target_image_size = target_image_size
+        self.rgb_keys = tuple(POLICY_RGB_KEYS)
 
         n_act = np.prod(sim_env.unwrapped.single_action_space.shape)
-        n_obs_shape = sample_obs['rgb'].shape
+        n_obs_shape = sample_obs[self.rgb_keys[0]].shape
         c = n_obs_shape[3] if len(n_obs_shape) == 4 else n_obs_shape[2]
         n_obs = (target_image_size, target_image_size, c)
         n_state = np.prod(sample_obs['state'].shape[1:]) if len(sample_obs['state'].shape) > 1 else sample_obs['state'].shape[0]
 
-        self.encoder = CNNEncoder(n_obs, device)
-        self.actor = Actor(sim_env, n_obs=self.encoder.repr_dim, n_state=n_state, n_act=n_act, device=self.device)
+        self.encoder = make_visual_encoder(n_obs, self.rgb_keys, device=device)
+        self.actor = Actor(sim_env, n_obs=self.encoder.repr_dim, n_state=n_state, n_act=n_act,
+                           rgb_proj_dim=50 * len(self.rgb_keys), device=self.device)
 
     def load_checkpoint(self, checkpoint, checkpoint_config=None, version=None):
         if checkpoint.lower() == "wandb":
@@ -481,6 +550,7 @@ class DeployAgent(nn.Module):
             ckpt = torch.load(local_path, map_location=self.device)
         else:
             ckpt = torch.load(checkpoint, map_location=self.device)
+        check_checkpoint_camera_config(ckpt, checkpoint)
         self.encoder.load_state_dict(ckpt['encoder'])
         self.actor.load_state_dict(ckpt['actor'])
         print(f"Loaded checkpoint from {checkpoint} at step {ckpt['global_step']}")
@@ -499,10 +569,10 @@ class DeployAgent(nn.Module):
         return rgb
 
     def get_action(self, obs):
-        rgb = self.downsample_rgb(obs['rgb'])
+        rgbs = tuple(self.downsample_rgb(obs[k]) for k in self.rgb_keys)
         with torch.no_grad():
-            rgb = self.encoder(rgb)
-            return self.actor.get_eval_action(rgb, obs['state'])
+            feats = self.encoder(rgbs)
+            return self.actor.get_eval_action(feats, obs['state'])
 
     def forward(self, obs):
         return self.get_action(obs)
@@ -593,15 +663,16 @@ if __name__ == "__main__":
                          reconfiguration_freq=args.eval_reconfiguration_freq, **eval_env_kwargs)
     max_episode_steps = gym_utils.find_max_episode_steps_value(envs)
 
-    envs = FlattenRGBDObservationWrapper(envs, rgb=True, depth=False, state=True)
-    eval_envs = FlattenRGBDObservationWrapper(eval_envs, rgb=True, depth=False, state=True)
+    # Keeps each policy camera in its own obs key (no channel-dim concatenation)
+    envs = utils.MultiCameraObsWrapper(envs, camera_to_key=POLICY_CAMERAS)
+    eval_envs = utils.MultiCameraObsWrapper(eval_envs, camera_to_key=POLICY_CAMERAS)
 
     if args.render_size != args.image_size:
-        envs = utils.DownsampleObsWrapper(envs, target_size=args.image_size)
-        eval_envs = utils.DownsampleObsWrapper(eval_envs, target_size=args.image_size)
+        envs = utils.DownsampleObsWrapper(envs, target_size=args.image_size, rgb_keys=POLICY_RGB_KEYS)
+        eval_envs = utils.DownsampleObsWrapper(eval_envs, target_size=args.image_size, rgb_keys=POLICY_RGB_KEYS)
     if args.apply_jitter:
-        envs = utils.ColorJitterWrapper(envs)
-        eval_envs = utils.ColorJitterWrapper(eval_envs)
+        envs = utils.ColorJitterWrapper(envs, rgb_keys=POLICY_RGB_KEYS)
+        eval_envs = utils.ColorJitterWrapper(eval_envs, rgb_keys=POLICY_RGB_KEYS)
     if isinstance(envs.action_space, gym.spaces.Dict):
         envs = FlattenActionSpaceWrapper(envs)
         eval_envs = FlattenActionSpaceWrapper(eval_envs)
@@ -624,9 +695,12 @@ if __name__ == "__main__":
     eval_envs = ManiSkillVectorEnv(eval_envs, args.num_eval_envs, ignore_terminations=not args.eval_partial_reset, record_metrics=True)
 
     n_act = math.prod(envs.unwrapped.single_action_space.shape)
-    n_channels = envs.unwrapped.single_observation_space['rgb'].shape[2]
+    num_views = len(POLICY_RGB_KEYS)
+    n_channels = envs.unwrapped.single_observation_space[POLICY_RGB_KEYS[0]].shape[2]
     n_obs = (args.image_size, args.image_size, n_channels)
     n_state = math.prod(envs.unwrapped.single_observation_space['state'].shape)
+    # One projection slot per camera so two views are not squeezed into a single-view bottleneck
+    rgb_proj_dim = 50 * num_views
     assert isinstance(envs.unwrapped.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     # ── Logger ─────────────────────────────────────────────────────────────
@@ -647,11 +721,12 @@ if __name__ == "__main__":
 
     # ── Instantiate modules ────────────────────────────────────────────────
 
-    encoder = CNNEncoder(n_obs=n_obs, device=device)
-    actor = Actor(envs, n_obs=encoder.repr_dim, n_state=n_state, n_act=n_act, device=device)
+    encoder = make_visual_encoder(n_obs=n_obs, view_names=POLICY_RGB_KEYS, device=device)
+    actor = Actor(envs, n_obs=encoder.repr_dim, n_state=n_state, n_act=n_act,
+                  rgb_proj_dim=rgb_proj_dim, device=device)
     critic = Critic(n_obs=encoder.repr_dim, n_state=n_state, n_act=n_act,
                     num_atoms=args.num_atoms, v_min=args.v_min, v_max=args.v_max,
-                    num_q=args.num_q, device=device)
+                    num_q=args.num_q, rgb_proj_dim=rgb_proj_dim, device=device)
 
     # Entropy tuning
     if args.autotune:
@@ -672,6 +747,7 @@ if __name__ == "__main__":
             ckpt = torch.load(local_path, map_location=device)
         else:
             ckpt = torch.load(args.checkpoint, map_location=device)
+        check_checkpoint_camera_config(ckpt, args.checkpoint)
         encoder.load_state_dict(ckpt['encoder'])
         actor.load_state_dict(ckpt['actor'])
         critic.load_state_dict(ckpt['critic'])
@@ -683,33 +759,35 @@ if __name__ == "__main__":
 
     # ── Inference copies (weight-sharing via from_module) ──────────────────
 
-    encoder_detach = CNNEncoder(n_obs=n_obs, device=device)
-    encoder_eval = CNNEncoder(n_obs=n_obs, device=device).eval()
+    encoder_detach = make_visual_encoder(n_obs=n_obs, view_names=POLICY_RGB_KEYS, device=device)
+    encoder_eval = make_visual_encoder(n_obs=n_obs, view_names=POLICY_RGB_KEYS, device=device).eval()
     from_module(encoder).data.to_module(encoder_detach)
     from_module(encoder).data.to_module(encoder_eval)
 
-    actor_detach = Actor(envs, n_obs=encoder.repr_dim, n_state=n_state, n_act=n_act, device=device)
-    actor_eval = Actor(envs, n_obs=encoder.repr_dim, n_state=n_state, n_act=n_act, device=device).eval()
+    actor_detach = Actor(envs, n_obs=encoder.repr_dim, n_state=n_state, n_act=n_act,
+                         rgb_proj_dim=rgb_proj_dim, device=device)
+    actor_eval = Actor(envs, n_obs=encoder.repr_dim, n_state=n_state, n_act=n_act,
+                       rgb_proj_dim=rgb_proj_dim, device=device).eval()
     from_module(actor).data.to_module(actor_detach)
     from_module(actor).data.to_module(actor_eval)
 
     # Target critic 
     critic_target = Critic(n_obs=encoder.repr_dim, n_state=n_state, n_act=n_act,
                            num_atoms=args.num_atoms, v_min=args.v_min, v_max=args.v_max,
-                           num_q=args.num_q, device=device)
+                           num_q=args.num_q, rgb_proj_dim=rgb_proj_dim, device=device)
     critic_target.load_state_dict(critic.state_dict())
     critic_online_params = list(critic.parameters())
     critic_target_params = list(critic_target.parameters())
 
     # ── Inference functions ────────────────────────────────────────────────
 
-    def get_rollout_action(rgb, state):
-        rgb_feat = encoder_detach(rgb)
+    def get_rollout_action(rgbs, state):
+        rgb_feat = encoder_detach(rgbs)
         action, _, _ = actor_detach.get_action(rgb_feat, state)
         return action
 
-    def get_eval_action(rgb, state):
-        rgb_feat = encoder_eval(rgb)
+    def get_eval_action(rgbs, state):
+        rgb_feat = encoder_eval(rgbs)
         return actor_eval.get_eval_action(rgb_feat, state)
 
     # ── Optimizers ─────────────────────────────────────────────────────────
@@ -723,7 +801,7 @@ if __name__ == "__main__":
 
     # TODO: Buffer stores current and next observations, should only store one
     buffer_mem = utils.calc_buffer_memory(
-        rgb_dim=np.prod(n_obs), 
+        rgb_dim=np.prod(n_obs) * num_views, 
         state_dim=n_state, 
         action_dim=n_act,
         max_length=min(args.buffer_size, args.total_timesteps), 
@@ -741,7 +819,8 @@ if __name__ == "__main__":
     for mod in [encoder, actor, critic]:
         print(mod)
     print(f"Task: {args.env_id}, Control mode: {envs.unwrapped._control_mode}")
-    print(f"Observations: {n_obs}, State: {n_state}, Actions: {n_act}")
+    print(f"Camera type: {CAMERA_TYPE}, policy cameras: {dict(POLICY_CAMERAS)}")
+    print(f"Observations: {num_views} x {n_obs}, State: {n_state}, Actions: {n_act}")
     print(f"Buffer memory required: {buffer_mem:.2f} GB")
     print(f"Device: {device}")
     print("-----------------------")
@@ -751,7 +830,8 @@ if __name__ == "__main__":
     def update_main(data):
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             with torch.no_grad():
-                next_obs = encoder(data["next_observations"]['rgb'])
+                # POLICY_RGB_KEYS is a fixed tuple -> unrolled at trace time, no dynamic control flow
+                next_obs = encoder(tuple(data["next_observations"][k] for k in POLICY_RGB_KEYS))
                 next_state = data["next_observations"]['state']
                 next_state_actions, next_state_log_pi, _ = actor.get_action(next_obs, next_state)
 
@@ -767,7 +847,7 @@ if __name__ == "__main__":
                     rewards_with_entropy, bootstrap, discount
                 )
 
-            obs = encoder(data["observations"]['rgb'])
+            obs = encoder(tuple(data["observations"][k] for k in POLICY_RGB_KEYS))
             state = data["observations"]['state']
 
             # Shape: [num_q, batch, num_atoms]
@@ -845,6 +925,8 @@ if __name__ == "__main__":
 
     # ── Training loop ──────────────────────────────────────────────────────
 
+    obs_keys = tuple(POLICY_RGB_KEYS) + ("state",)
+
     obs, _ = envs.reset(seed=args.seed)
     eval_envs.reset(seed=args.seed)
 
@@ -869,6 +951,8 @@ if __name__ == "__main__":
                     'critic': critic_target.state_dict(),
                     'log_alpha': log_alpha,
                     'global_step': global_step,
+                    'camera_type': CAMERA_TYPE,
+                    'rgb_keys': list(POLICY_RGB_KEYS),
                 }, model_path)
                 print(f"Step {global_step}: model checkpoint saved to {model_path}")
 
@@ -876,10 +960,10 @@ if __name__ == "__main__":
         if global_step < args.learning_starts:
             actions = envs.action_space.sample()
         else:
-            actions = get_rollout_action(obs['rgb'], obs['state'])
+            actions = get_rollout_action(tuple(obs[k] for k in POLICY_RGB_KEYS), obs['state'])
 
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-        real_next_obs = {'rgb': next_obs['rgb'].clone(), 'state': next_obs['state'].clone()}
+        real_next_obs = {k: next_obs[k].clone() for k in obs_keys}
 
         # Determine bootstrap behavior 
         if args.bootstrap_at_done == 'never':
@@ -893,8 +977,8 @@ if __name__ == "__main__":
             dones = terminations
 
         if "final_info" in infos:
-            real_next_obs['rgb'][need_final_obs] = infos["final_observation"]['rgb'][need_final_obs]
-            real_next_obs['state'][need_final_obs] = infos["final_observation"]['state'][need_final_obs]
+            for k in obs_keys:
+                real_next_obs[k][need_final_obs] = infos["final_observation"][k][need_final_obs]
 
         transition = TensorDict(
             observations=obs,

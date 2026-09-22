@@ -135,9 +135,18 @@ of the tasks to match the real world objects.
 
 ### Step 1: Configure Your Robot
 
-Edit `deploy_utils/robot_config.py` with your hardware settings. 
+Edit `deploy_utils/robot_config.py` with your hardware settings (serial port, calibration id,
+and the OpenCV camera IDs `WRIST_CAMERA_ID` / `THIRD_CAMERA_ID`). Run
+`python deploy_utils/robot_config.py` to list the camera indices this machine can see.
+The camera dict is built automatically from `CAMERA_TYPE` (see below), so the LeRobot camera
+names always match the simulation sensor names.
 
-### Step 2: Tune Camera Alignment 
+### Step 2: Tune Camera Alignment
+
+`python deploy_utils/tune_camera.py` shows one `Real | Sim | Blended` row per policy camera.
+In `wrist_third` mode press `c` to switch which camera the trackbars control (or start with
+`--camera=third`), and `p` to print that camera's constants for `envs/base_random_env.py`.
+
 
 Visual reinforcement learning agents are sensitive to slight visual changes. The more we reduce the difference, the better your agent will transfer. 
 We use a table with a black background. In ManiSkill3 simulation, we segment the objects of interest and replace the background with the image 
@@ -189,6 +198,25 @@ python deploy.py \
 - If at any time during deployment you need to stop, you can press `q` or `ctrl+c`.
 - For best performances, run the robot in a well lit room with no sunlight.
 - For better transfer from sim to real, make sure the robot motor calibration is good, and the visual alignment between sim and real is good.
+
+## 📷 Camera Configuration
+
+The policy cameras are selected with a single constant at the top of
+[`envs/base_random_env.py`](envs/base_random_env.py):
+
+```python
+CAMERA_TYPE = "wrist"        # gripper-mounted camera only          -> obs: rgb, state
+CAMERA_TYPE = "third"        # fixed third-person camera only       -> obs: rgb, state
+CAMERA_TYPE = "wrist_third"  # both, as two separate observations   -> obs: wrist_rgb, third_rgb, state
+```
+
+This one setting drives the simulation sensors, the observation wrappers, the model
+(one independent `CNNEncoder` per camera, features concatenated before the projection),
+`deploy.py` and `deploy_utils/robot_config.py`. The human render camera used for evaluation
+videos is always separate and is never a policy observation.
+
+Checkpoints record the camera type they were trained with; loading a checkpoint under a
+different `CAMERA_TYPE` fails with an explicit error instead of silently mismatching weights.
 
 ## 📁 Project Structure
 

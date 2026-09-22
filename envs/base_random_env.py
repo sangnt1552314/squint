@@ -4,6 +4,7 @@ This module provides a clean hierarchy of environment classes:
 - BaseRandomEnv: Common DR (gripper, lighting, robot color) + overlay support
 - ThirdCameraEnv: Third-person camera with every-step pose randomization
 - WristCameraEnv: Wrist camera with gripper-following randomization
+- WristThirdCameraEnv: Both of the above as two separate policy observations
 
 Usage:
     from .base_random_env import DefaultCameraEnv, DefaultRandomizationConfig
@@ -14,15 +15,39 @@ Usage:
 
 # =============================================================================
 # CHANGE THIS TO SWITCH CAMERA TYPE FOR ALL TASKS
-# Options: "wrist" or "third"
+# Options: "wrist", "third" or "wrist_third"
 # =============================================================================
-CAMERA_TYPE = "wrist"
+CAMERA_TYPE = "wrist_third"
 # =============================================================================
 # This sets the following aliases (defined at bottom of file):
-#   "wrist" -> DefaultCameraEnv = WristCameraEnv
-#   "third" -> DefaultCameraEnv = ThirdCameraEnv
-# DefaultRandomizationConfig = RandomizationConfig (unified config for both)
+#   "wrist"       -> DefaultCameraEnv = WristCameraEnv
+#   "third"       -> DefaultCameraEnv = ThirdCameraEnv
+#   "wrist_third" -> DefaultCameraEnv = WristThirdCameraEnv (two policy cameras)
+# DefaultRandomizationConfig = RandomizationConfig (unified config for all)
 # =============================================================================
+
+# Ordered mapping: sim sensor name -> policy observation key.
+# This is the single source of truth used by the env, the obs wrappers, the model,
+# deploy.py and deploy_utils/robot_config.py. Cameras are always selected by name,
+# never by dict ordering. The human render camera ("render_camera") is never here.
+_POLICY_CAMERAS_BY_TYPE = {
+    "wrist": {"base_camera": "rgb"},
+    "third": {"base_camera": "rgb"},
+    "wrist_third": {"wrist_camera": "wrist_rgb", "third_camera": "third_rgb"},
+}
+if CAMERA_TYPE not in _POLICY_CAMERAS_BY_TYPE:
+    raise ValueError(
+        f"Unknown CAMERA_TYPE: {CAMERA_TYPE}. Use 'wrist', 'third' or 'wrist_third'"
+    )
+
+POLICY_CAMERAS: dict = dict(_POLICY_CAMERAS_BY_TYPE[CAMERA_TYPE])
+"""Ordered {sim sensor name: policy obs key} for the current CAMERA_TYPE."""
+
+POLICY_CAMERA_NAMES = tuple(POLICY_CAMERAS.keys())
+"""Sim sensor names fed to the policy, in a fixed order."""
+
+POLICY_RGB_KEYS = tuple(POLICY_CAMERAS.values())
+"""Policy observation RGB keys, in the same fixed order as POLICY_CAMERA_NAMES."""
 
 import os
 from dataclasses import asdict, dataclass
@@ -123,10 +148,10 @@ class BaseRandomEnv(BaseEnv):
         elif isinstance(domain_randomization_config, RandomizationConfig):
             self.domain_randomization_config = domain_randomization_config
 
-        # Overlay state
+        # Overlay state (one overlay per policy camera, keyed by sensor name)
         self._objects_to_remove_from_greenscreen: list[Union[Actor, Link]] = []
         self._segmentation_ids_to_keep: torch.Tensor = None
-        self._rgb_overlay_image: torch.Tensor = None
+        self._rgb_overlay_images: dict[str, torch.Tensor] = {}
         self._overlay_initialized = False
 
         # Load overlay image as numpy array (will convert to tensor in _after_reconfigure)
@@ -276,28 +301,19 @@ class BaseRandomEnv(BaseEnv):
         else:
             self._segmentation_ids_to_keep = torch.tensor([], dtype=torch.int64)
 
-        # Load overlay image to GPU
-        if not self._overlay_initialized and self._rgb_overlay_np is not None:
-            # Get camera resolution from sensor config
+        # Build one overlay per policy camera (cameras may have different resolutions)
+        if not self._overlay_initialized:
             for name, sensor in self._sensor_configs.items():
-                if isinstance(sensor, CameraConfig) and name != "render_camera":
-                    # Resize to camera resolution
+                if not isinstance(sensor, CameraConfig) or name == "render_camera":
+                    continue
+                if self._rgb_overlay_np is not None:
                     resized = cv2.resize(self._rgb_overlay_np, (sensor.width, sensor.height))
-                    self._rgb_overlay_image = common.to_tensor(resized, device=self.device)
-                    break
-
-            # If no camera found, use default size
-            if self._rgb_overlay_image is None and self._rgb_overlay_np is not None:
-                self._rgb_overlay_image = common.to_tensor(self._rgb_overlay_np, device=self.device)
-
-        # Create black overlay if no image provided but overlay is enabled
-        if not self._overlay_initialized and self._rgb_overlay_image is None:
-            for name, sensor in self._sensor_configs.items():
-                if isinstance(sensor, CameraConfig) and name != "render_camera":
-                    self._rgb_overlay_image = torch.zeros(
+                    self._rgb_overlay_images[name] = common.to_tensor(resized, device=self.device)
+                else:
+                    # Plain black background when no overlay image is provided
+                    self._rgb_overlay_images[name] = torch.zeros(
                         (sensor.height, sensor.width, 3), dtype=torch.uint8, device=self.device
                     )
-                    break
 
         self._overlay_initialized = True
         self._objects_to_remove_from_greenscreen = []
@@ -332,10 +348,10 @@ class BaseRandomEnv(BaseEnv):
         if not (self.obs_mode_struct.visual.rgb and self.obs_mode_struct.visual.segmentation):
             return obs
 
-        if self._rgb_overlay_image is None:
+        if not self._rgb_overlay_images:
             return obs
 
-        # Apply overlay to all RGB cameras
+        # Apply the matching overlay to each RGB camera (looked up by name)
         for camera_name, camera_obs in obs.items():
             if not isinstance(camera_obs, dict) or "rgb" not in camera_obs:
                 continue
@@ -344,10 +360,12 @@ class BaseRandomEnv(BaseEnv):
             if camera_name == "render_camera":
                 continue
 
-            overlay = self._rgb_overlay_image
+            overlay = self._rgb_overlay_images.get(camera_name)
+            if overlay is None:
+                continue
             if overlay.device != camera_obs["rgb"].device:
-                self._rgb_overlay_image = overlay.to(camera_obs["rgb"].device)
-                overlay = self._rgb_overlay_image
+                overlay = overlay.to(camera_obs["rgb"].device)
+                self._rgb_overlay_images[camera_name] = overlay
 
             obs[camera_name]["rgb"] = self._green_screen_rgb(
                 camera_obs["rgb"],
@@ -390,6 +408,9 @@ class ThirdCameraEnv(BaseRandomEnv):
     Camera pose is randomized at every control step when domain_randomization=True.
     """
 
+    # Sim sensor name this camera is registered under
+    THIRD_CAMERA_NAME = "base_camera"
+
     # Default camera position and target
     DEFAULT_CAMERA_POS = [0.6, 0.3, 0.3]
     DEFAULT_CAMERA_TARGET = [0.3, 0, 0.05]
@@ -408,8 +429,8 @@ class ThirdCameraEnv(BaseRandomEnv):
 
         super().__init__(*args, domain_randomization_config=domain_randomization_config, **kwargs)
 
-    @property
-    def _default_sensor_configs(self):
+    def _third_camera_config(self, name: str) -> CameraConfig:
+        """Build the fixed third-person CameraConfig under the given sensor name."""
         config = self.domain_randomization_config
 
         # FOV randomization
@@ -418,18 +439,20 @@ class ThirdCameraEnv(BaseRandomEnv):
         else:
             fov_noise = 0
 
-        return [
-            CameraConfig(
-                "base_camera",
-                pose=sapien.Pose(),
-                width=128,
-                height=128,
-                fov=self.DEFAULT_CAMERA_FOV + fov_noise,
-                near=0.01,
-                far=100,
-                mount=self.camera_mount,
-            )
-        ]
+        return CameraConfig(
+            name,
+            pose=sapien.Pose(),
+            width=128,
+            height=128,
+            fov=self.DEFAULT_CAMERA_FOV + fov_noise,
+            near=0.01,
+            far=100,
+            mount=self.camera_mount,
+        )
+
+    @property
+    def _default_sensor_configs(self):
+        return [self._third_camera_config(self.THIRD_CAMERA_NAME)]
 
     def sample_camera_poses(self, n: int):
         """Sample randomized camera poses."""
@@ -493,6 +516,9 @@ class WristCameraEnv(BaseRandomEnv):
     Position and rotation offsets are randomized every step when domain_randomization=True.
     """
 
+    # Sim sensor name this camera is registered under
+    WRIST_CAMERA_NAME = "base_camera"
+
     # Base pose relative to gripper_link
     WRIST_CAMERA_BASE_POS = (-0.0049, 0.0498, -0.0591)
     WRIST_CAMERA_BASE_ROT_RAD = (np.deg2rad(-90), np.deg2rad(91), np.deg2rad(-35.31))  # radians (roll, pitch, yaw)
@@ -506,8 +532,8 @@ class WristCameraEnv(BaseRandomEnv):
     ):
         super().__init__(*args, domain_randomization_config=domain_randomization_config, **kwargs)
 
-    @property
-    def _default_sensor_configs(self):
+    def _wrist_camera_config(self, name: str) -> CameraConfig:
+        """Build the gripper-mounted wrist CameraConfig under the given sensor name."""
         config = self.domain_randomization_config
 
         # FOV noise (randomized per-env at initialization)
@@ -516,18 +542,20 @@ class WristCameraEnv(BaseRandomEnv):
         else:
             fov_noise = 0
 
-        return [
-            CameraConfig(
-                "base_camera",
-                pose=sapien.Pose(),
-                width=128,
-                height=128,
-                fov=self.WRIST_CAMERA_FOV + fov_noise,
-                near=0.01,
-                far=100,
-                mount=self.wrist_camera_mount,
-            )
-        ]
+        return CameraConfig(
+            name,
+            pose=sapien.Pose(),
+            width=128,
+            height=128,
+            fov=self.WRIST_CAMERA_FOV + fov_noise,
+            near=0.01,
+            far=100,
+            mount=self.wrist_camera_mount,
+        )
+
+    @property
+    def _default_sensor_configs(self):
+        return [self._wrist_camera_config(self.WRIST_CAMERA_NAME)]
 
     def _update_wrist_camera_pose(self):
         """Update wrist camera mount to follow gripper with random offsets."""
@@ -598,14 +626,35 @@ class WristCameraEnv(BaseRandomEnv):
             self.scene._gpu_apply_all()
 
 
+class WristThirdCameraEnv(ThirdCameraEnv, WristCameraEnv):
+    """Environment exposing BOTH the wrist camera and the fixed third-person camera.
+
+    Reuses ThirdCameraEnv and WristCameraEnv wholesale via the MRO:
+    - ThirdCameraEnv._initialize_episode / _before_control_step randomize the fixed camera
+    - WristCameraEnv.reset / _after_control_step keep the wrist camera on gripper_link
+    Both sensors are registered under distinct names so policy observations stay
+    explicitly distinguishable. The human render camera is untouched.
+    """
+
+    WRIST_CAMERA_NAME = "wrist_camera"
+    THIRD_CAMERA_NAME = "third_camera"
+
+    @property
+    def _default_sensor_configs(self):
+        # Order matches POLICY_CAMERAS, but downstream code looks cameras up by name.
+        return [
+            self._wrist_camera_config(self.WRIST_CAMERA_NAME),
+            self._third_camera_config(self.THIRD_CAMERA_NAME),
+        ]
+
+
 # =============================================================================
 # Default aliases based on CAMERA_TYPE setting at top of file
 # =============================================================================
-if CAMERA_TYPE == "wrist":
-    DefaultCameraEnv = WristCameraEnv
-elif CAMERA_TYPE == "third":
-    DefaultCameraEnv = ThirdCameraEnv
-else:
-    raise ValueError(f"Unknown CAMERA_TYPE: {CAMERA_TYPE}. Use 'wrist' or 'third'")
+DefaultCameraEnv = {
+    "wrist": WristCameraEnv,
+    "third": ThirdCameraEnv,
+    "wrist_third": WristThirdCameraEnv,
+}[CAMERA_TYPE]
 
 DefaultRandomizationConfig = RandomizationConfig

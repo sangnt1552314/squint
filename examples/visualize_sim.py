@@ -16,10 +16,10 @@ import cv2
 import torch
 import gymnasium as gym
 
-from mani_skill.utils.wrappers.flatten import FlattenRGBDObservationWrapper
 from mani_skill.utils.visualization.misc import tile_images
 
 import utils
+from envs.base_random_env import POLICY_CAMERAS, POLICY_RGB_KEYS
 
 # Add tasks
 import envs
@@ -37,6 +37,7 @@ CONFIG = {
         'SO101LiftCube-v1', 'SO101LiftCan-v1',
         'SO101PlaceCube-v1', 'SO101PlaceCan-v1',
         'SO101StackCube-v1', 'SO101StackCan-v1',
+        'SO101LiftBlackCube-v1',
     ],
 
     # Environment settings
@@ -82,11 +83,11 @@ def make_env(task: str, config: dict = CONFIG):
     env = gym.make(task, **env_kwargs)
 
     if "rgb" in config['obs_mode']:
-        env = FlattenRGBDObservationWrapper(env, rgb=True, depth=False, state=True)
+        env = utils.MultiCameraObsWrapper(env, camera_to_key=POLICY_CAMERAS)
         if config['downsample_size'] is not None:
-            env = utils.DownsampleObsWrapper(env, target_size=config['downsample_size'])
+            env = utils.DownsampleObsWrapper(env, target_size=config['downsample_size'], rgb_keys=POLICY_RGB_KEYS)
         if config['color_jitter']:
-            env = utils.ColorJitterWrapper(env)
+            env = utils.ColorJitterWrapper(env, rgb_keys=POLICY_RGB_KEYS)
 
     env.reset(seed=config['seed'])
     return env
@@ -129,27 +130,27 @@ def visualize_tasks(config: dict = CONFIG):
             # Get third-person render view (N, H, W, 3)
             render_rgb = env.render()
 
-            # Get observation RGB (wrist camera view)
-            if isinstance(obs, dict) and 'rgb' in obs:
-                obs_rgb = obs['rgb']  # (N, H, W, C) where C may be 3 or 3*num_views
-
-                # Handle multiple camera views - just take first view for simplicity
-                if obs_rgb.shape[-1] != 3 and obs_rgb.shape[-1] % 3 == 0:
-                    obs_rgb = obs_rgb[..., :3]  # Take first camera view
-
-                # Resize obs to match render size (obs may be downsampled)
+            # Get the policy camera view(s) - each camera keeps its own obs key
+            if isinstance(obs, dict) and POLICY_RGB_KEYS[0] in obs:
                 render_h, render_w = render_rgb.shape[1], render_rgb.shape[2]
-                if obs_rgb.shape[1] != render_h or obs_rgb.shape[2] != render_w:
-                    obs_rgb = torch.nn.functional.interpolate(
-                        obs_rgb.permute(0, 3, 1, 2).float(),  # (N, 3, H, W)
-                        size=(render_h, render_w),
-                        mode='nearest',
-                    ).permute(0, 2, 3, 1).to(torch.uint8)  # (N, H, W, 3)
 
-                # Interleave: concatenate obs and render for each env, then tile
-                paired = torch.cat([obs_rgb, render_rgb], dim=2)
+                views = []
+                for key in POLICY_RGB_KEYS:
+                    obs_rgb = obs[key]  # (N, H, W, 3)
+                    # Resize obs to match render size (obs may be downsampled)
+                    if obs_rgb.shape[1] != render_h or obs_rgb.shape[2] != render_w:
+                        obs_rgb = torch.nn.functional.interpolate(
+                            obs_rgb.permute(0, 3, 1, 2).float(),  # (N, 3, H, W)
+                            size=(render_h, render_w),
+                            mode='nearest',
+                        ).permute(0, 2, 3, 1).to(torch.uint8)  # (N, H, W, 3)
+                    views.append(obs_rgb)
+
+                # Interleave: concatenate each policy view and the render, then tile
+                paired = torch.cat(views + [render_rgb], dim=2)
+                num_cols = len(views) + 1
                 rgb = tile_images(paired, nrows=video_nrows).cpu().numpy().astype(np.uint8)
-                rgb = cv2.resize(rgb, dsize=(window_size * 2, window_size))
+                rgb = cv2.resize(rgb, dsize=(window_size * num_cols, window_size))
             else:
                 # State mode: only show render view
                 rgb = tile_images(render_rgb, nrows=video_nrows).cpu().numpy().astype(np.uint8)
@@ -159,7 +160,7 @@ def visualize_tasks(config: dict = CONFIG):
             rgb = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
             print(f"Step: {step}/{steps_per_task}, done={done}", end="\r")
-            cv2.imshow("Interleaved: Obs | Render per env", rgb)
+            cv2.imshow("Interleaved: Policy views | Render per env", rgb)
             cv2.waitKey(30)
 
             # Reset on interval or done
