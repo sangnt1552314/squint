@@ -13,11 +13,15 @@ Usage:
         ...
 """
 
+import os
+
 # =============================================================================
-# CHANGE THIS TO SWITCH CAMERA TYPE FOR ALL TASKS
+# CAMERA TYPE FOR ALL TASKS
 # Options: "wrist", "third" or "wrist_third"
+# Set per run via the SQUINT_CAMERA_TYPE env var (e.g. in train_wrist.sh);
+# falls back to "wrist_third" when unset.
 # =============================================================================
-CAMERA_TYPE = "wrist_third"
+CAMERA_TYPE = os.environ.get("SQUINT_CAMERA_TYPE", "wrist_third")
 # =============================================================================
 # This sets the following aliases (defined at bottom of file):
 #   "wrist"       -> DefaultCameraEnv = WristCameraEnv
@@ -37,7 +41,7 @@ _POLICY_CAMERAS_BY_TYPE = {
 }
 if CAMERA_TYPE not in _POLICY_CAMERAS_BY_TYPE:
     raise ValueError(
-        f"Unknown CAMERA_TYPE: {CAMERA_TYPE}. Use 'wrist', 'third' or 'wrist_third'"
+        f"Unknown CAMERA_TYPE (SQUINT_CAMERA_TYPE): {CAMERA_TYPE}. Use 'wrist', 'third' or 'wrist_third'"
     )
 
 POLICY_CAMERAS: dict = dict(_POLICY_CAMERAS_BY_TYPE[CAMERA_TYPE])
@@ -49,7 +53,6 @@ POLICY_CAMERA_NAMES = tuple(POLICY_CAMERAS.keys())
 POLICY_RGB_KEYS = tuple(POLICY_CAMERAS.values())
 """Policy observation RGB keys, in the same fixed order as POLICY_CAMERA_NAMES."""
 
-import os
 from dataclasses import asdict, dataclass
 from typing import Optional, Sequence, Union
 
