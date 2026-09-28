@@ -5,6 +5,8 @@
 # Must match the camera setup the checkpoint was trained with (train_wrist.sh -> wrist).
 # Real camera: WRIST_CAMERA_ID in deploy_utils/robot_config.py
 export SQUINT_CAMERA_TYPE=wrist
+# Original SQUINT/WowRobo wrist mount (camera sees the gripper jaws), as this checkpoint was trained
+export SQUINT_WRIST_MOUNT=default
 
 cd "$(dirname "$0")"
 
@@ -14,7 +16,7 @@ if [ ! -f "$CHECKPOINT" ]; then
     exit 1
 fi
 
-echo "SQUINT_CAMERA_TYPE=${SQUINT_CAMERA_TYPE}"
+echo "SQUINT_CAMERA_TYPE=${SQUINT_CAMERA_TYPE} SQUINT_WRIST_MOUNT=${SQUINT_WRIST_MOUNT}"
 echo "CHECKPOINT=${CHECKPOINT}"
 
 # --debug: live window with real | sim | overlay of the wrist camera

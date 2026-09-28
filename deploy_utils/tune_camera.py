@@ -35,7 +35,7 @@ from mani_skill.utils import sapien_utils
 from mani_skill.utils.structs import Pose
 
 import utils
-from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_CAMERA_NAMES
+from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_CAMERA_NAMES, WRIST_MOUNT
 
 from deploy_utils.manipulator import LeRobotRealAgent
 from deploy_utils.robot_config import create_real_robot
@@ -288,12 +288,10 @@ class LiveCameraTuner:
 
         if self.tuned_role == "wrist":
             w = self.wrist
-            cv2.createTrackbar("X (mm)", self.win, int((w["x"] + 0.1) * self.pos_scale), 200,
-                               self._setter(w, "x", 0.1, self.pos_scale))
-            cv2.createTrackbar("Y (mm)", self.win, int(w["y"] * self.pos_scale), 150,
-                               self._setter(w, "y", 0.0, self.pos_scale))
-            cv2.createTrackbar("Z (mm)", self.win, int((w["z"] + 0.1) * self.pos_scale), 200,
-                               self._setter(w, "z", 0.1, self.pos_scale))
+            # +-150mm around the gripper_link origin so side-mounted brackets are reachable
+            for label, key in [("X (mm)", "x"), ("Y (mm)", "y"), ("Z (mm)", "z")]:
+                cv2.createTrackbar(label, self.win, int((w[key] + 0.15) * self.pos_scale), 300,
+                                   self._setter(w, key, 0.15, self.pos_scale))
             cv2.createTrackbar("Roll", self.win, int(w["roll"] + 180), 360, self._setter(w, "roll", 180))
             cv2.createTrackbar("Pitch", self.win, int(w["pitch"] + 180), 360, self._setter(w, "pitch", 180))
             cv2.createTrackbar("Yaw", self.win, int(w["yaw"] + 180), 360, self._setter(w, "yaw", 180))
@@ -339,10 +337,10 @@ class LiveCameraTuner:
         print(f"\n{'='*70}")
         if self.tuned_role == "wrist":
             w = self.wrist
-            print("Wrist camera params for WristCameraEnv (envs/base_random_env.py):")
-            print(f"  WRIST_CAMERA_BASE_POS = ({w['x']:.4f}, {w['y']:.4f}, {w['z']:.4f})")
-            print(f"  WRIST_CAMERA_BASE_ROT_RAD = (np.deg2rad({w['roll']:.1f}), np.deg2rad({w['pitch']:.1f}), np.deg2rad({w['yaw']:.1f}))")
-            print(f"  WRIST_CAMERA_FOV = np.deg2rad({w['fov']:.1f})")
+            print(f"Wrist camera preset (paste into WRIST_CAMERA_MOUNTS in envs/base_random_env.py, "
+                  f"current SQUINT_WRIST_MOUNT={WRIST_MOUNT}):")
+            print(f'  "{WRIST_MOUNT}": dict(pos=({w["x"]:.4f}, {w["y"]:.4f}, {w["z"]:.4f}), '
+                  f'rot_deg=({w["roll"]:.1f}, {w["pitch"]:.1f}, {w["yaw"]:.1f}), fov_deg={w["fov"]:.1f}),')
         else:
             t = self.third
             print("Third camera params for ThirdCameraEnv (envs/base_random_env.py):")
@@ -353,7 +351,7 @@ class LiveCameraTuner:
 
     def run(self):
         roles = list(dict.fromkeys(self.roles.values()))
-        print(f"\nCAMERA_TYPE={CAMERA_TYPE}, policy cameras: {dict(POLICY_CAMERAS)}")
+        print(f"\nCAMERA_TYPE={CAMERA_TYPE}, policy cameras: {dict(POLICY_CAMERAS)}, SQUINT_WRIST_MOUNT={WRIST_MOUNT}")
         print("\nControls:")
         print(f"  c  - Switch tuned camera (available: {roles})")
         print("  p  - Print current camera parameters")

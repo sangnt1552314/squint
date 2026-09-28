@@ -41,7 +41,7 @@ import envs
 import mani_skill.envs
 
 import utils
-from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_RGB_KEYS
+from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_RGB_KEYS, WRIST_MOUNT, WRIST_CAMERA_MOUNTS
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -525,6 +525,16 @@ def check_checkpoint_camera_config(ckpt, source):
             f"weights cannot be reused. Set CAMERA_TYPE in envs/base_random_env.py to "
             f"'{ckpt_type}' to use this checkpoint, or train a new one for '{CAMERA_TYPE}'."
         )
+    # The wrist mount does not change the architecture, but a policy trained for one mount
+    # sees a completely different image on another. Checkpoints before mount presets = "default".
+    if "wrist" in CAMERA_TYPE:
+        ckpt_mount = ckpt.get("wrist_mount", "default")
+        if ckpt_mount != WRIST_MOUNT:
+            raise RuntimeError(
+                f"Checkpoint '{source}' was trained with SQUINT_WRIST_MOUNT={ckpt_mount}, "
+                f"but the current mount is SQUINT_WRIST_MOUNT={WRIST_MOUNT}. "
+                f"Set SQUINT_WRIST_MOUNT={ckpt_mount} (and use that physical camera mount)."
+            )
 
 
 class DeployAgent(nn.Module):
@@ -635,6 +645,13 @@ class Logger:
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
+    # A non-default wrist mount that is still a copy of "default" has not been measured yet
+    if ("wrist" in CAMERA_TYPE and WRIST_MOUNT != "default"
+            and WRIST_CAMERA_MOUNTS[WRIST_MOUNT] == WRIST_CAMERA_MOUNTS["default"]):
+        raise RuntimeError(
+            f"SQUINT_WRIST_MOUNT={WRIST_MOUNT} is still the placeholder copy of 'default'. Measure it with "
+            f"deploy_utils/tune_camera.py and paste the values into WRIST_CAMERA_MOUNTS before training."
+        )
     args.num_total_iterations = int(args.total_timesteps // args.num_envs)
     assert args.num_updates > 0, "No updates will be made to the model with the current setup"
 
@@ -842,7 +859,7 @@ if __name__ == "__main__":
     for mod in [encoder, actor, critic]:
         print(mod)
     print(f"Task: {args.env_id}, Control mode: {envs.unwrapped._control_mode}")
-    print(f"Camera type: {CAMERA_TYPE}, policy cameras: {dict(POLICY_CAMERAS)}")
+    print(f"Camera type: {CAMERA_TYPE}, policy cameras: {dict(POLICY_CAMERAS)}, wrist mount: {WRIST_MOUNT}")
     print(f"Observations: {num_views} x {n_obs}, State: {n_state}, Actions: {n_act}")
     print(f"Buffer memory required: {buffer_mem:.2f} GB")
     print(f"Device: {device}")
@@ -976,6 +993,7 @@ if __name__ == "__main__":
                     'global_step': global_step,
                     'camera_type': CAMERA_TYPE,
                     'rgb_keys': list(POLICY_RGB_KEYS),
+                    'wrist_mount': WRIST_MOUNT,
                 }, model_path)
                 print(f"Step {global_step}: model checkpoint saved to {model_path}")
 

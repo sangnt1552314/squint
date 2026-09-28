@@ -53,6 +53,26 @@ POLICY_CAMERA_NAMES = tuple(POLICY_CAMERAS.keys())
 POLICY_RGB_KEYS = tuple(POLICY_CAMERAS.values())
 """Policy observation RGB keys, in the same fixed order as POLICY_CAMERA_NAMES."""
 
+# =============================================================================
+# WRIST CAMERA MOUNT PRESETS
+# Pose of the wrist camera relative to gripper_link (meters, roll/pitch/yaw in degrees)
+# and its vertical FOV. Select per run via the SQUINT_WRIST_MOUNT env var (default: "default").
+# To measure a mount: SQUINT_CAMERA_TYPE=wrist SQUINT_WRIST_MOUNT=<name> python deploy_utils/tune_camera.py,
+# align the gripper/base in the Blended view, press p, and paste the printed line below.
+# =============================================================================
+WRIST_CAMERA_MOUNTS = {
+    # Original SQUINT / WowRobo wrist mount: camera sees both gripper jaws.
+    "default": dict(pos=(-0.0049, 0.0498, -0.0591), rot_deg=(-90, 91, -35.31), fov_deg=71),
+    # Home SO-101: camera on a side L-bracket next to the fixed jaw; the gripper is not in view.
+    # PLACEHOLDER (copy of "default") until measured with tune_camera.py - do not train with it before then.
+    "home": dict(pos=(-0.0049, 0.0498, -0.0591), rot_deg=(-90, 91, -35.31), fov_deg=71),
+}
+WRIST_MOUNT = os.environ.get("SQUINT_WRIST_MOUNT", "default")
+if WRIST_MOUNT not in WRIST_CAMERA_MOUNTS:
+    raise ValueError(
+        f"Unknown SQUINT_WRIST_MOUNT: {WRIST_MOUNT}. Options: {list(WRIST_CAMERA_MOUNTS)}"
+    )
+
 from dataclasses import asdict, dataclass
 from typing import Optional, Sequence, Union
 
@@ -608,10 +628,10 @@ class WristCameraEnv(BaseRandomEnv):
     # Sim sensor name this camera is registered under
     WRIST_CAMERA_NAME = "base_camera"
 
-    # Base pose relative to gripper_link
-    WRIST_CAMERA_BASE_POS = (-0.0049, 0.0498, -0.0591)
-    WRIST_CAMERA_BASE_ROT_RAD = (np.deg2rad(-90), np.deg2rad(91), np.deg2rad(-35.31))  # radians (roll, pitch, yaw)
-    WRIST_CAMERA_FOV = np.deg2rad(71)  # 71 degrees
+    # Base pose relative to gripper_link, from the selected mount preset (WRIST_CAMERA_MOUNTS)
+    WRIST_CAMERA_BASE_POS = tuple(WRIST_CAMERA_MOUNTS[WRIST_MOUNT]["pos"])
+    WRIST_CAMERA_BASE_ROT_RAD = tuple(np.deg2rad(WRIST_CAMERA_MOUNTS[WRIST_MOUNT]["rot_deg"]))  # radians (roll, pitch, yaw)
+    WRIST_CAMERA_FOV = np.deg2rad(WRIST_CAMERA_MOUNTS[WRIST_MOUNT]["fov_deg"])  # vertical FOV
 
     def __init__(
         self,
