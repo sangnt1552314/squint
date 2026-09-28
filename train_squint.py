@@ -111,6 +111,8 @@ class Args:
     """square size of the input image for actor (HxW) - after downsampling"""
     apply_jitter: bool = True
     """applies color jitter to all input RGB observations (better for sim2real)"""
+    remove_overlay: bool = False
+    """if toggled, disables the background overlay (envs/black_overlay.png) and uses raw sim images"""
 
     # Algorithm specific arguments
     total_timesteps: int = 1_500_000
@@ -656,6 +658,9 @@ if __name__ == "__main__":
     if args.env_domain_randomization:
         env_kwargs["domain_randomization"] = True
         eval_env_kwargs["domain_randomization"] = True
+    if args.remove_overlay:
+        env_kwargs["domain_randomization_config"] = dict(apply_overlay=False)
+        eval_env_kwargs["domain_randomization_config"] = dict(apply_overlay=False)
 
     envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1,
                     reconfiguration_freq=args.reconfiguration_freq, **env_kwargs)
