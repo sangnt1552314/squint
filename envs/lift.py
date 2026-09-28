@@ -25,7 +25,7 @@ class LiftRandomizationConfig(DefaultRandomizationConfig):
     # Noisy joint positions for better sim2real
     robot_qpos_noise_std: float = np.deg2rad(5)
     # Cube-specific randomization
-    cube_half_size_range: Sequence[float] = (0.02 / 2, 0.04 / 2)
+    cube_half_size_range: Sequence[float] = (0.02 / 2, 0.05 / 2)
     # Can-specific randomization: small toy cylinder (~2.8cm x 5cm) up to a standard 330ml can (~6.6cm x 12.2cm)
     can_radius_range: Sequence[float] = (0.028 / 2, 0.066 / 2)
     can_half_height_range: Sequence[float] = (0.05 / 2, 0.122 / 2)
@@ -46,7 +46,7 @@ class LiftRandomizationConfig(DefaultRandomizationConfig):
 
     # Background and lighting randomization
     randomize_light_direction: bool = True
-    randomize_table_color: bool = True
+    table_color_mode: str = "wood"
     randomize_floor_color: bool = True
 
 

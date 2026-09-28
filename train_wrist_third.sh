@@ -23,6 +23,7 @@ python -u train_squint.py \
     --exp_name=lift_cube_dr_wrist_third_1500k \
     --total_timesteps=1500000 \
     --remove_overlay \
+    --table_color=random \
     --track \
     --wandb_entity=tsangb34-national-university-of-singapore-students-union \
     --wandb_project_name=cs6283 \

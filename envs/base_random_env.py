@@ -102,14 +102,25 @@ class RandomizationConfig:
     """Max per-axis noise added to each directional light's direction vector."""
     light_intensity_range: Sequence[float] = (0.6, 1.4)
     """Range for directional light intensity (grayscale color multiplier)."""
+    light_shadows: bool = False
+    """Whether the angled directional light casts shadows. Cameras also need shader_pack="default" to show them."""
+    light_shadow_scale: float = 1.0
+    """Half-extent (m) of the shadow map around the origin; small = sharper shadows over the workspace."""
+    light_shadow_map_size: int = 512
+    """Shadow map resolution per env (memory grows with num_envs * size^2)."""
 
     # === Background randomization (only visible when apply_overlay=False) ===
-    randomize_table_color: bool = False
-    """Whether to cover the table top with a randomly colored patch (per-env)."""
+    table_color_mode: str = "none"
+    """Table top color per env: "none" (default ManiSkill table), "wood" (random wood shades
+    from table_wood_colors) or "random" (any RGB within background_color_range)."""
+    table_wood_colors: Sequence[Sequence[float]] = ((0.36, 0.22, 0.12), (0.80, 0.62, 0.42))
+    """(dark, light) wood RGB; each env's table is a random shade between the two (dark walnut -> light oak)."""
+    table_color_noise: float = 0.03
+    """Max per-channel RGB noise on top of the wood shade (subtle tint variation)."""
     randomize_floor_color: bool = False
     """Whether to cover the floor with a randomly colored patch (per-env)."""
     background_color_range: Sequence[float] = (0.0, 1.0)
-    """Per-channel RGB range for table/floor colors."""
+    """Per-channel RGB range for floor colors and table_color_mode="random"."""
 
     # === Third-person camera settings (only used by ThirdCameraEnv) ===
     third_camera_pos_noise: Sequence[float] = (0.025, 0.025, 0.025)
@@ -213,6 +224,9 @@ class BaseRandomEnv(BaseEnv):
             self.scene.set_ambient_light([0.3, 0.3, 0.3])
 
         config = self.domain_randomization_config
+        # Shadows only from the angled light; small map + tight extent keeps per-env memory low
+        shadow_kwargs = dict(shadow=config.light_shadows, shadow_scale=config.light_shadow_scale,
+                             shadow_map_size=config.light_shadow_map_size)
         if self.domain_randomization and config.randomize_light_direction:
             dir_noise = self._batched_episode_rng.uniform(
                 -config.light_direction_noise, config.light_direction_noise, size=(2, 3)
@@ -221,24 +235,20 @@ class BaseRandomEnv(BaseEnv):
             for i in range(self.num_envs):
                 self.scene.add_directional_light(
                     np.array([1, 1, -1]) + dir_noise[i, 0], [intensities[i, 0]] * 3,
-                    shadow=False, shadow_scale=5, shadow_map_size=2048, scene_idxs=[i],
+                    **shadow_kwargs, scene_idxs=[i],
                 )
                 self.scene.add_directional_light(
                     np.array([0, 0, -1]) + dir_noise[i, 1], [intensities[i, 1]] * 3, scene_idxs=[i],
                 )
         else:
-            self.scene.add_directional_light(
-                [1, 1, -1], [1, 1, 1], shadow=False, shadow_scale=5, shadow_map_size=2048
-            )
+            self.scene.add_directional_light([1, 1, -1], [1, 1, 1], **shadow_kwargs)
             self.scene.add_directional_light([0, 0, -1], [1, 1, 1])
 
-    def _build_color_patches(self, name: str, p: Sequence[float], half_size: Sequence[float]):
-        """Build a visual-only box per env with a random color (e.g. to recolor table/floor).
+    def _build_color_patches(self, name: str, p: Sequence[float], half_size: Sequence[float], colors: np.ndarray):
+        """Build a visual-only box per env with the given per-env RGB colors (e.g. to recolor table/floor).
 
         Patches are not kept by the greenscreen, so they only show when apply_overlay=False.
         """
-        lo, hi = self.domain_randomization_config.background_color_range
-        colors = self._batched_episode_rng.uniform(lo, hi, size=(3,))
         for i in range(self.num_envs):
             builder = self.scene.create_actor_builder()
             builder.add_box_visual(
@@ -256,13 +266,28 @@ class BaseRandomEnv(BaseEnv):
         if not self.domain_randomization:
             return
         config = self.domain_randomization_config
-        if config.randomize_table_color:
+        if config.table_color_mode not in ("none", "wood", "random"):
+            raise ValueError(f"Unknown table_color_mode: {config.table_color_mode}. Use 'none', 'wood' or 'random'")
+        if config.table_color_mode != "none":
+            if config.table_color_mode == "wood":
+                # Wood tones only: interpolate dark -> light wood, plus a small tint
+                dark, light = (np.asarray(c, dtype=np.float64) for c in config.table_wood_colors)
+                t = self._batched_episode_rng.uniform(0.0, 1.0, size=(1,))
+                noise = self._batched_episode_rng.uniform(-config.table_color_noise, config.table_color_noise, size=(3,))
+                table_colors = np.clip(dark + t * (light - dark) + noise, 0.0, 1.0)
+            else:
+                lo, hi = config.background_color_range
+                table_colors = self._batched_episode_rng.uniform(lo, hi, size=(3,))
             # Thin patch whose top sits 0.5mm above the table surface (z=0)
             self._build_color_patches(
-                "table_patch", [*table_center_xy, 0.0], [*table_half_size_xy, 0.0005]
+                "table_patch", [*table_center_xy, 0.0], [*table_half_size_xy, 0.0005], table_colors
             )
         if config.randomize_floor_color:
-            self._build_color_patches("floor_patch", [0.0, 0.0, floor_z + 0.001], [5.0, 5.0, 0.0005])
+            lo, hi = config.background_color_range
+            floor_colors = self._batched_episode_rng.uniform(lo, hi, size=(3,))
+            self._build_color_patches(
+                "floor_patch", [0.0, 0.0, floor_z + 0.001], [5.0, 5.0, 0.0005], floor_colors
+            )
 
     def _load_camera_mount(self):
         """Create camera mount actors for pose randomization."""

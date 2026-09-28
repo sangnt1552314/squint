@@ -16,7 +16,7 @@ import math
 import random
 import time
 import glob
-from typing import Optional
+from typing import Literal, Optional
 
 from mani_skill.utils import gym_utils
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
@@ -113,6 +113,11 @@ class Args:
     """applies color jitter to all input RGB observations (better for sim2real)"""
     remove_overlay: bool = False
     """if toggled, disables the background overlay (envs/black_overlay.png) and uses raw sim images"""
+    table_color: Optional[Literal["none", "wood", "random"]] = None
+    """table top color per env (needs env_domain_randomization, visible with remove_overlay): 'none' = default
+    ManiSkill table, 'wood' = random wood shades, 'random' = any color. None keeps the task default (Lift: wood)"""
+    shadows: bool = False
+    """if toggled, the angled light casts shadows and policy cameras use the 'default' shader (slower rendering)"""
 
     # Algorithm specific arguments
     total_timesteps: int = 1_500_000
@@ -658,9 +663,19 @@ if __name__ == "__main__":
     if args.env_domain_randomization:
         env_kwargs["domain_randomization"] = True
         eval_env_kwargs["domain_randomization"] = True
+    dr_config = {}
     if args.remove_overlay:
-        env_kwargs["domain_randomization_config"] = dict(apply_overlay=False)
-        eval_env_kwargs["domain_randomization_config"] = dict(apply_overlay=False)
+        dr_config["apply_overlay"] = False
+    if args.table_color is not None:
+        dr_config["table_color_mode"] = args.table_color
+    if args.shadows:
+        dr_config["light_shadows"] = True
+        # The default "minimal" sensor shader does not render shadows
+        env_kwargs["sensor_configs"]["shader_pack"] = "default"
+        eval_env_kwargs["sensor_configs"]["shader_pack"] = "default"
+    if dr_config:
+        env_kwargs["domain_randomization_config"] = dict(dr_config)
+        eval_env_kwargs["domain_randomization_config"] = dict(dr_config)
 
     envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1,
                     reconfiguration_freq=args.reconfiguration_freq, **env_kwargs)

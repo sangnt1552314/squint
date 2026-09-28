@@ -1,14 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=squint-lift-cube-dr-wrist
+#SBATCH --job-name=squint-lift-cube-dr-wrist-third-wood
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:h100-96:1
 #SBATCH --mem=64G
-#SBATCH --output=squint-lift-cube-dr-wrist-%j.out
+#SBATCH --output=squint-lift-cube-dr-wrist-third-wood-%j.out
 #SBATCH --time=03:00:00
 
-# Wrist camera ONLY (single policy view, obs key "rgb").
+# Wrist + third-person cameras (two policy views, obs keys "wrist_rgb" + "third_rgb").
 # Options: wrist | third | wrist_third. Deploy with the same value.
-export SQUINT_CAMERA_TYPE=wrist
+export SQUINT_CAMERA_TYPE=wrist_third
 
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate squint
@@ -18,13 +18,13 @@ cd ~/projects/squint
 nvidia-smi
 echo "SQUINT_CAMERA_TYPE=${SQUINT_CAMERA_TYPE}"
 
+# Table top: random wood shades per env (dark walnut -> light oak)
 python -u train_squint.py \
     --env_id=SO101LiftCube-v1 \
-    --exp_name=lift_cube_dr_wrist_table_random_shadows_1500k \
+    --exp_name=lift_cube_dr_wrist_third_wood_1500k \
     --total_timesteps=1500000 \
     --remove_overlay \
-    --table_color=random \
-    --shadows \
+    --table_color=wood \
     --track \
     --wandb_entity=tsangb34-national-university-of-singapore-students-union \
     --wandb_project_name=cs6283 \
