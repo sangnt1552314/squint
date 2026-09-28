@@ -25,14 +25,29 @@ class LiftRandomizationConfig(DefaultRandomizationConfig):
     # Noisy joint positions for better sim2real
     robot_qpos_noise_std: float = np.deg2rad(5)
     # Cube-specific randomization
-    cube_half_size_range: Sequence[float] = (0.022 / 2, 0.028 / 2)
-    # Can-specific randomization
-    can_radius_range: Sequence[float] = (0.028 / 2, 0.038 / 2)
-    can_half_height_range: Sequence[float] = (0.05 / 2, 0.07 / 2)
+    cube_half_size_range: Sequence[float] = (0.02 / 2, 0.04 / 2)
+    # Can-specific randomization: small toy cylinder (~2.8cm x 5cm) up to a standard 330ml can (~6.6cm x 12.2cm)
+    can_radius_range: Sequence[float] = (0.028 / 2, 0.066 / 2)
+    can_half_height_range: Sequence[float] = (0.05 / 2, 0.122 / 2)
 
     item_friction_range: Sequence[float] = (0.1, 0.5)
     item_density_range: Sequence[float] = (200, 200)
     randomize_item_color: bool = False
+    """If True, item color is fully random (ignores item_color_choices and item_color_noise)."""
+    item_color_choices: Optional[Sequence[Sequence[float]]] = (
+        (1.0, 0.0, 0.0),     # red
+        (0.0, 0.0, 1.0),     # blue
+        (0.05, 0.05, 0.05),  # black (invisible against black_overlay.png, use with apply_overlay=False)
+        (0.0, 0.6, 0.0),     # green
+    )
+    """RGB palette; env i gets choices[i % len], so each color covers an equal share of envs."""
+    item_color_noise: float = 0.05
+    """Max per-channel RGB noise added on top of the chosen color."""
+
+    # Background and lighting randomization
+    randomize_light_direction: bool = True
+    randomize_table_color: bool = True
+    randomize_floor_color: bool = True
 
 
 class Lift(DefaultCameraEnv):
@@ -57,7 +72,6 @@ class Lift(DefaultCameraEnv):
         self,
         *args,
         item_type="cube",
-        item_color=None,
         robot_uids="so101",
         control_mode="pd_joint_target_delta_pos",
         domain_randomization_config: Union[
@@ -69,8 +83,6 @@ class Lift(DefaultCameraEnv):
         **kwargs,
     ):
         self.item_type = item_type
-        # Optional RGB (0-1) override for the item's visual color
-        self.item_color = item_color
 
         # Robot-specific configuration
         if robot_uids == "so100":
@@ -121,6 +133,10 @@ class Lift(DefaultCameraEnv):
         # where the 0, 0, 0 position is the center of the table
         self.table_scene = TableSceneBuilder(self)
         self.table_scene.build()
+        # Table spans x in ~[0.01, 1.22], y in ~[-1.21, 1.21] after the table_pose offset below;
+        # floor is at -table height
+        self._randomize_background(table_center_xy=[0.617, 0.0], table_half_size_xy=[0.6, 1.2],
+                                   floor_z=-0.9196429)
 
 
         if self.item_type not in ["cube", "can"]:
@@ -148,8 +164,6 @@ class Lift(DefaultCameraEnv):
                     low=cfg.cube_half_size_range[0],
                     high=cfg.cube_half_size_range[1],
                 )
-                if cfg.randomize_item_color:
-                    colors = self._batched_episode_rng.uniform(low=0, high=1, size=(3,))
                 frictions = self._batched_episode_rng.uniform(
                     low=cfg.item_friction_range[0],
                     high=cfg.item_friction_range[1],
@@ -190,8 +204,6 @@ class Lift(DefaultCameraEnv):
                     low=cfg.can_half_height_range[0],
                     high=cfg.can_half_height_range[1],
                 )
-                if cfg.randomize_item_color:
-                    colors = self._batched_episode_rng.uniform(low=0, high=1, size=(3,))
                 frictions = self._batched_episode_rng.uniform(
                     low=cfg.item_friction_range[0],
                     high=cfg.item_friction_range[1],
@@ -205,9 +217,17 @@ class Lift(DefaultCameraEnv):
             self.item_half_sizes = self.item_half_heights  # For z-position in _initialize_episode
             self.item_dimensions = torch.stack([self.item_half_radii, self.item_half_radii, self.item_half_heights], dim=-1)
 
-        # Explicit color override (e.g. black cube) takes priority over the per-type default
-        if self.item_color is not None:
-            colors[:, :] = np.asarray(self.item_color, dtype=colors.dtype)
+        # Color randomization: fully random, or an evenly split palette plus small jitter
+        if self.domain_randomization:
+            if cfg.randomize_item_color:
+                colors = self._batched_episode_rng.uniform(low=0, high=1, size=(3,))
+            else:
+                if cfg.item_color_choices:
+                    palette = np.asarray(cfg.item_color_choices, dtype=colors.dtype)
+                    colors = palette[np.arange(self.num_envs) % len(palette)]
+                if cfg.item_color_noise > 0:
+                    noise = self._batched_episode_rng.uniform(-cfg.item_color_noise, cfg.item_color_noise, size=(3,))
+                    colors = np.clip(colors + noise, 0.0, 1.0)
 
         colors = np.concatenate([colors, np.ones((self.num_envs, 1))], axis=-1)
         self.item_frictions = common.to_tensor(frictions, device=self.device)
@@ -420,14 +440,3 @@ class LiftCube(Lift):
 class LiftCan(Lift):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, item_type="can", **kwargs)
-
-@register_env("SO101LiftBlackCube-v1", max_episode_steps=50)
-class LiftBlackCube(Lift):
-    """Same as SO101LiftCube-v1 but the cube is black instead of red."""
-
-    # Near-black; bump this up if the cube becomes indistinguishable from the
-    # black background overlay (envs/black_overlay.png).
-    CUBE_COLOR = (0.05, 0.05, 0.05)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, item_type="cube", item_color=self.CUBE_COLOR, **kwargs)

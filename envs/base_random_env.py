@@ -93,6 +93,20 @@ class RandomizationConfig:
     """Robot color in RGB (0-1). Set to "random" for per-episode randomization."""
     randomize_lighting: bool = True
     """Whether to randomize ambient lighting."""
+    randomize_light_direction: bool = False
+    """Whether to randomize directional light direction and intensity (per-env)."""
+    light_direction_noise: float = 0.5
+    """Max per-axis noise added to each directional light's direction vector."""
+    light_intensity_range: Sequence[float] = (0.6, 1.4)
+    """Range for directional light intensity (grayscale color multiplier)."""
+
+    # === Background randomization (only visible when apply_overlay=False) ===
+    randomize_table_color: bool = False
+    """Whether to cover the table top with a randomly colored patch (per-env)."""
+    randomize_floor_color: bool = False
+    """Whether to cover the floor with a randomly colored patch (per-env)."""
+    background_color_range: Sequence[float] = (0.0, 1.0)
+    """Per-channel RGB range for table/floor colors."""
 
     # === Third-person camera settings (only used by ThirdCameraEnv) ===
     third_camera_pos_noise: Sequence[float] = (0.025, 0.025, 0.025)
@@ -195,10 +209,57 @@ class BaseRandomEnv(BaseEnv):
         else:
             self.scene.set_ambient_light([0.3, 0.3, 0.3])
 
-        self.scene.add_directional_light(
-            [1, 1, -1], [1, 1, 1], shadow=False, shadow_scale=5, shadow_map_size=2048
-        )
-        self.scene.add_directional_light([0, 0, -1], [1, 1, 1])
+        config = self.domain_randomization_config
+        if self.domain_randomization and config.randomize_light_direction:
+            dir_noise = self._batched_episode_rng.uniform(
+                -config.light_direction_noise, config.light_direction_noise, size=(2, 3)
+            )
+            intensities = self._batched_episode_rng.uniform(*config.light_intensity_range, size=(2,))
+            for i in range(self.num_envs):
+                self.scene.add_directional_light(
+                    np.array([1, 1, -1]) + dir_noise[i, 0], [intensities[i, 0]] * 3,
+                    shadow=False, shadow_scale=5, shadow_map_size=2048, scene_idxs=[i],
+                )
+                self.scene.add_directional_light(
+                    np.array([0, 0, -1]) + dir_noise[i, 1], [intensities[i, 1]] * 3, scene_idxs=[i],
+                )
+        else:
+            self.scene.add_directional_light(
+                [1, 1, -1], [1, 1, 1], shadow=False, shadow_scale=5, shadow_map_size=2048
+            )
+            self.scene.add_directional_light([0, 0, -1], [1, 1, 1])
+
+    def _build_color_patches(self, name: str, p: Sequence[float], half_size: Sequence[float]):
+        """Build a visual-only box per env with a random color (e.g. to recolor table/floor).
+
+        Patches are not kept by the greenscreen, so they only show when apply_overlay=False.
+        """
+        lo, hi = self.domain_randomization_config.background_color_range
+        colors = self._batched_episode_rng.uniform(lo, hi, size=(3,))
+        for i in range(self.num_envs):
+            builder = self.scene.create_actor_builder()
+            builder.add_box_visual(
+                half_size=half_size,
+                material=sapien.render.RenderMaterial(base_color=[*colors[i], 1]),
+            )
+            builder.initial_pose = sapien.Pose(p=p)
+            builder.set_scene_idxs([i])
+            patch = builder.build_kinematic(name=f"{name}-{i}")
+            self.remove_from_state_dict_registry(patch)
+
+    def _randomize_background(self, table_center_xy: Sequence[float], table_half_size_xy: Sequence[float],
+                              floor_z: float):
+        """Recolor table top and/or floor per env according to the config."""
+        if not self.domain_randomization:
+            return
+        config = self.domain_randomization_config
+        if config.randomize_table_color:
+            # Thin patch whose top sits 0.5mm above the table surface (z=0)
+            self._build_color_patches(
+                "table_patch", [*table_center_xy, 0.0], [*table_half_size_xy, 0.0005]
+            )
+        if config.randomize_floor_color:
+            self._build_color_patches("floor_patch", [0.0, 0.0, floor_z + 0.001], [5.0, 5.0, 0.0005])
 
     def _load_camera_mount(self):
         """Create camera mount actors for pose randomization."""
