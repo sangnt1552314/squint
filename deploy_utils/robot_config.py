@@ -18,7 +18,7 @@ from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERA_NAMES
 # ============================================================================
 # CHANGE THESE: your hardware settings
 # ============================================================================
-ROBOT_PORT = "/dev/ttyACM0"        # your robot's serial port
+ROBOT_PORT = "/dev/tty.usbmodem5C821064861"        # your robot's serial port
 ROBOT_ID = "home_follower"    # your calibration file name
 
 # OpenCV camera IDs. On macOS these are plain integers (0, 1, 2, ...).
@@ -27,9 +27,9 @@ ROBOT_ID = "home_follower"    # your calibration file name
 WRIST_CAMERA_ID = 0
 THIRD_CAMERA_ID = 1
 
-CAMERA_FPS = 25
+CAMERA_FPS = 30
 CAMERA_WIDTH = 640
-CAMERA_HEIGHT = 480
+CAMERA_HEIGHT = 360
 # ============================================================================
 
 

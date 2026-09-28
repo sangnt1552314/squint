@@ -547,6 +547,9 @@ class DeployAgent(nn.Module):
                            rgb_proj_dim=50 * len(self.rgb_keys), device=self.device)
 
     def load_checkpoint(self, checkpoint, checkpoint_config=None, version=None):
+        # Checkpoints saved on a GPU store CUDA tensors; without an explicit device, load to CPU
+        # (deploy.py moves the agent to its device afterwards) so this also works on CPU/Mac machines
+        map_location = self.device if self.device is not None else "cpu"
         if checkpoint.lower() == "wandb":
             assert checkpoint_config is not None, "Need checkpoint_config to download from wandb"
             cc = checkpoint_config
@@ -554,9 +557,9 @@ class DeployAgent(nn.Module):
             print(artifact_path)
             local_path = Logger().download_checkpoint(artifact_path)
             local_path = f"{local_path}/ckpt.pt"
-            ckpt = torch.load(local_path, map_location=self.device)
+            ckpt = torch.load(local_path, map_location=map_location)
         else:
-            ckpt = torch.load(checkpoint, map_location=self.device)
+            ckpt = torch.load(checkpoint, map_location=map_location)
         check_checkpoint_camera_config(ckpt, checkpoint)
         self.encoder.load_state_dict(ckpt['encoder'])
         self.actor.load_state_dict(ckpt['actor'])
