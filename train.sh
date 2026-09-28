@@ -6,6 +6,9 @@
 #SBATCH --output=squint-lift-cube-dr-%j.out
 #SBATCH --time=03:00:00
 
+# Wrist + third-person cameras (two policy views). Options: wrist | third | wrist_third
+export SQUINT_CAMERA_TYPE=wrist_third
+
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate squint
 
