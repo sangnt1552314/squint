@@ -11,6 +11,7 @@ from lerobot.robots.utils import make_robot_from_config
 from lerobot.robots.so_follower.config_so_follower import SO101FollowerConfig, SO100FollowerConfig
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
+from lerobot.cameras import Cv2Backends
 
 from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERA_NAMES
 
@@ -18,7 +19,7 @@ from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERA_NAMES
 # CHANGE THESE: your hardware settings
 # ============================================================================
 ROBOT_PORT = "/dev/ttyACM0"        # your robot's serial port
-ROBOT_ID = "so101_follower_arm"    # your calibration file name
+ROBOT_ID = "home_follower"    # your calibration file name
 
 # OpenCV camera IDs. On macOS these are plain integers (0, 1, 2, ...).
 # On Linux they may be device paths such as "/dev/video0".
@@ -26,7 +27,7 @@ ROBOT_ID = "so101_follower_arm"    # your calibration file name
 WRIST_CAMERA_ID = 0
 THIRD_CAMERA_ID = 1
 
-CAMERA_FPS = 30
+CAMERA_FPS = 25
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 # ============================================================================
@@ -38,6 +39,7 @@ def _opencv_camera(index_or_path):
         fps=CAMERA_FPS,
         width=CAMERA_WIDTH,
         height=CAMERA_HEIGHT,
+        backend=Cv2Backends.AVFOUNDATION,
     )
     # RealSense alternative:
     # return RealSenseCameraConfig(
