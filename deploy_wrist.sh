@@ -10,7 +10,9 @@ export SQUINT_WRIST_MOUNT=default
 
 cd "$(dirname "$0")"
 
-CHECKPOINT=runs/lift_cube_dr_wrist_1500k/ckpt.pt
+RUN_NAME="lift_cube_dr_wrist_table_random_shadows_1500k"
+
+CHECKPOINT=runs/$RUN_NAME/ckpt.pt
 if [ ! -f "$CHECKPOINT" ]; then
     echo "Checkpoint not found: $CHECKPOINT"
     exit 1
@@ -22,7 +24,7 @@ echo "CHECKPOINT=${CHECKPOINT}"
 # --debug: live window with real | sim | overlay of the wrist camera
 # --record_dir: saves the preprocessed wrist camera image (the policy's input before the
 #   16x16 downsample) as one mp4 per episode
-RECORD_DIR=recordings/lift_cube_dr_wrist_1500k/$(date +%Y%m%d_%H%M%S)
+RECORD_DIR=recordings/$RUN_NAME/$(date +%Y%m%d_%H%M%S)
 echo "RECORD_DIR=${RECORD_DIR}"
 
 python -u deploy.py \

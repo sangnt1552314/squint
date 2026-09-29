@@ -116,6 +116,9 @@ class Args:
     table_color: Optional[Literal["none", "wood", "random"]] = None
     """table top color per env (needs env_domain_randomization, visible with remove_overlay): 'none' = default
     ManiSkill table, 'wood' = random wood shades, 'random' = any color. None keeps the task default (Lift: wood)"""
+    robot_color: Literal["black", "white", "random"] = "black"
+    """robot body color: 'black' = matte black (matches a black-printed SO101), 'white' = URDF default (white
+    parts, dark motors), 'random' = per-episode random color (needs env_domain_randomization)"""
     shadows: bool = False
     """if toggled, the angled light casts shadows and policy cameras use the 'default' shader (slower rendering)"""
 
@@ -688,6 +691,8 @@ if __name__ == "__main__":
         dr_config["apply_overlay"] = False
     if args.table_color is not None:
         dr_config["table_color_mode"] = args.table_color
+    if args.robot_color != "black":
+        dr_config["robot_color"] = {"white": None, "random": "random"}[args.robot_color]
     if args.shadows:
         dr_config["light_shadows"] = True
         # The default "minimal" sensor shader does not render shadows

@@ -18,7 +18,7 @@ Keyboard Controls:
 
 from dataclasses import dataclass
 import random
-from typing import Optional
+from typing import Literal, Optional
 from pathlib import Path
 import sys
 import signal
@@ -85,6 +85,8 @@ class Args:
     """HxW the real/sim cameras are rendered at before policy downsampling"""
     policy_image_size: int = 16
     """HxW of the image fed to the policy (must match --image_size used in training)"""
+    robot_color: Literal["black", "white"] = "black"
+    """sim robot color for the --debug overlay (match training's --robot_color); 'white' = URDF default"""
 
     # Wandb checkpoint download settings (only used when checkpoint='wandb')
     wandb_entity: Optional[str] = None  # CHANGE THIS: your wandb username/entity
@@ -417,6 +419,8 @@ def main(args: Args):
         control_mode=args.control_mode,
         sensor_configs=dict(width=args.image_size, height=args.image_size)
     )
+    if args.robot_color == "white":
+        env_kwargs["domain_randomization_config"] = dict(robot_color=None)
 
     sim_env = gym.make(args.env_id, **env_kwargs)
     # Same wrapper as training: one obs key per policy camera, selected by name
