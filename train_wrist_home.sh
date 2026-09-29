@@ -9,7 +9,7 @@
 # Wrist camera ONLY (single policy view, obs key "rgb").
 # Options: wrist | third | wrist_third. Deploy with the same value.
 export SQUINT_CAMERA_TYPE=wrist
-# Home SO-101 wrist mount: camera on a side L-bracket, gripper not in view.
+# Home SO-101 wrist mount: camera sees the fixed jaw in the lower-left of the frame.
 # Values live in WRIST_CAMERA_MOUNTS["home"] (envs/base_random_env.py), measured with tune_camera.py.
 # Training refuses to start while "home" is still the placeholder copy of "default".
 export SQUINT_WRIST_MOUNT=home
