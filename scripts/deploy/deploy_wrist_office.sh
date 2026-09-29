@@ -1,13 +1,13 @@
 #!/bin/bash
-# Deploy the wrist-only lift-cube policy trained for the OFFICE wrist mount (train_wrist_office.sh).
-# Usage: bash deploy_wrist_office.sh [extra deploy.py args, e.g. --no-continuous_eval]
+# Deploy the wrist-only lift-cube policy trained for the OFFICE wrist mount (scripts/train/train_wrist_office.sh).
+# Usage: bash scripts/deploy/deploy_wrist_office.sh [extra deploy.py args, e.g. --no-continuous_eval]
 
 # Must match the setup the checkpoint was trained with (checked when loading the checkpoint).
 # Real camera: WRIST_CAMERA_ID in deploy_utils/robot_config.py
 export SQUINT_CAMERA_TYPE=wrist
 export SQUINT_WRIST_MOUNT=office
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../.."
 
 CHECKPOINT=runs/lift_cube_dr_wrist_office_table_random_shadows_1500k/ckpt.pt
 if [ ! -f "$CHECKPOINT" ]; then

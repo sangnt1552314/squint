@@ -1,14 +1,14 @@
 #!/bin/bash
 # Deploy the wrist-only lift-cube policy on the real SO101.
-# Usage: bash deploy_wrist.sh [extra deploy.py args, e.g. --debug --record_dir=recordings/lift_wrist]
+# Usage: bash scripts/deploy/deploy_wrist.sh [extra deploy.py args, e.g. --debug --record_dir=recordings/lift_wrist]
 
-# Must match the camera setup the checkpoint was trained with (train_wrist.sh -> wrist).
+# Must match the camera setup the checkpoint was trained with (scripts/train/train_wrist.sh -> wrist).
 # Real camera: WRIST_CAMERA_ID in deploy_utils/robot_config.py
 export SQUINT_CAMERA_TYPE=wrist
 # Original SQUINT/WowRobo wrist mount (camera sees the gripper jaws), as this checkpoint was trained
 export SQUINT_WRIST_MOUNT=default
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../.."
 
 RUN_NAME="lift_cube_dr_wrist_table_random_shadows_1500k"
 

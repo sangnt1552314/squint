@@ -18,7 +18,7 @@ import os
 # =============================================================================
 # CAMERA TYPE FOR ALL TASKS
 # Options: "wrist", "third" or "wrist_third"
-# Set per run via the SQUINT_CAMERA_TYPE env var (e.g. in train_wrist.sh);
+# Set per run via the SQUINT_CAMERA_TYPE env var (e.g. in scripts/train/train_wrist.sh);
 # falls back to "wrist_third" when unset.
 # =============================================================================
 CAMERA_TYPE = os.environ.get("SQUINT_CAMERA_TYPE", "wrist_third")
