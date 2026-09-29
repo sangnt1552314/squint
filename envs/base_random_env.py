@@ -63,8 +63,11 @@ POLICY_RGB_KEYS = tuple(POLICY_CAMERAS.values())
 WRIST_CAMERA_MOUNTS = {
     # Original SQUINT / WowRobo wrist mount: camera sees both gripper jaws.
     "default": dict(pos=(-0.0049, 0.0498, -0.0591), rot_deg=(-90, 91, -35.31), fov_deg=71),
-    # Home SO-101 wrist camera: sees the fixed jaw in the lower-left of the frame. Measured with tune_camera.py.
-    "home": dict(pos=(-0.011, 0.049, -0.060), rot_deg=(-95, 93, -30), fov_deg=74),
+    # Home SO-101: camera on a side L-bracket next to the fixed jaw; the gripper is not in view.
+    # PLACEHOLDER (copy of "default") until measured with tune_camera.py - do not train with it before then.
+    "home": dict(pos=(-0.0049, 0.0498, -0.0591), rot_deg=(-90, 91, -35.31), fov_deg=71),
+    # Office SO-101 wrist camera: sees the fixed jaw in the lower-left of the frame. Measured with tune_camera.py.
+    "office": dict(pos=(-0.011, 0.049, -0.060), rot_deg=(-95, 93, -30), fov_deg=74),
 }
 WRIST_MOUNT = os.environ.get("SQUINT_WRIST_MOUNT", "default")
 if WRIST_MOUNT not in WRIST_CAMERA_MOUNTS:

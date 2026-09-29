@@ -1,18 +1,18 @@
 #!/bin/bash
-#SBATCH --job-name=squint-lift-cube-dr-wrist-home
+#SBATCH --job-name=squint-lift-cube-dr-wrist-office
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:h100-96:1
 #SBATCH --mem=64G
-#SBATCH --output=squint-lift-cube-dr-wrist-home-%j.out
+#SBATCH --output=squint-lift-cube-dr-wrist-office-%j.out
 #SBATCH --time=04:00:00
 
 # Wrist camera ONLY (single policy view, obs key "rgb").
 # Options: wrist | third | wrist_third. Deploy with the same value.
 export SQUINT_CAMERA_TYPE=wrist
-# Home SO-101 wrist mount: camera on a side L-bracket, gripper not in view.
-# Values live in WRIST_CAMERA_MOUNTS["home"] (envs/base_random_env.py), measured with tune_camera.py.
+# Office SO-101 wrist mount: camera sees the fixed jaw in the lower-left of the frame.
+# Values live in WRIST_CAMERA_MOUNTS["office"] (envs/base_random_env.py), measured with tune_camera.py.
 # Training refuses to start while "home" is still the placeholder copy of "default".
-export SQUINT_WRIST_MOUNT=home
+export SQUINT_WRIST_MOUNT=office
 
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate squint
@@ -26,7 +26,7 @@ echo "SQUINT_CAMERA_TYPE=${SQUINT_CAMERA_TYPE} SQUINT_WRIST_MOUNT=${SQUINT_WRIST
 # Shadows: angled light casts shadows, cameras use the slower "default" shader
 python -u train_squint.py \
     --env_id=SO101LiftCube-v1 \
-    --exp_name=lift_cube_dr_wrist_home_table_random_shadows_1500k \
+    --exp_name=lift_cube_dr_wrist_office_table_random_shadows_1500k \
     --total_timesteps=1500000 \
     --remove_overlay \
     --table_color=random \
