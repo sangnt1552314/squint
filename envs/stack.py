@@ -24,16 +24,18 @@ class StackRandomizationConfig(DefaultRandomizationConfig):
     """Domain randomization config for Stack task, extending wrist camera randomization."""
     # Noisy joint positions for better sim2real
     robot_qpos_noise_std: float = np.deg2rad(5)
-    # ItemA (red cube to be stacked) - always a cube
-    itemA_half_size_range: Sequence[float] = (0.022 / 2, 0.028 / 2)
-    # ItemB (green base - cube or can)
-    cube_half_size_range: Sequence[float] = (0.025 / 2, 0.035 / 2)  # Slightly larger
-    can_radius_range: Sequence[float] = (0.028 / 2, 0.038 / 2)
-    can_half_height_range: Sequence[float] = (0.05 / 2, 0.07 / 2)
+    # ItemA (red cube to be stacked) - always a cube, 1-5 cm edge
+    itemA_half_size_range: Sequence[float] = (0.01 / 2, 0.05 / 2)
+    # ItemB (blue base - cube or can), larger than ItemA so it is a stable base
+    cube_half_size_range: Sequence[float] = (0.02 / 2, 0.06 / 2)  # 2-6 cm edge
+    can_radius_range: Sequence[float] = (0.02 / 2, 0.07 / 2)  # 2-7 cm diameter
+    can_half_height_range: Sequence[float] = (0.02 / 2, 0.09 / 2)  # 2-9 cm tall
 
     item_friction_range: Sequence[float] = (0.1, 0.5)
     item_density_range: Sequence[float] = (200, 200)
-    randomize_item_color: bool = False  # Keep colors distinct (red/blue)
+    randomize_item_color: bool = False
+    """If True, itemA and itemB get independent random colors per env (needs domain_randomization).
+    False keeps them distinct: red itemA, blue itemB."""
 
 
 class Stack(DefaultCameraEnv):
@@ -162,6 +164,8 @@ class Stack(DefaultCameraEnv):
         colorsA = np.zeros((self.num_envs, 4))
         colorsA[:, 0] = 1  # Red
         colorsA[:, 3] = 1  # Alpha
+        if self.domain_randomization and cfg.randomize_item_color:
+            colorsA[:, :3] = self._batched_episode_rng.uniform(low=0, high=1, size=(3,))
 
         itemsA = []
         for i in range(self.num_envs):
@@ -193,6 +197,8 @@ class Stack(DefaultCameraEnv):
         colorsB = np.zeros((self.num_envs, 4))
         colorsB[:, 2] = 1  # Blue
         colorsB[:, 3] = 1  # Alpha
+        if self.domain_randomization and cfg.randomize_item_color:
+            colorsB[:, :3] = self._batched_episode_rng.uniform(low=0, high=1, size=(3,))
 
         if self.item_type == "cube":
             itemB_half_sizes = (
@@ -352,12 +358,12 @@ class Stack(DefaultCameraEnv):
                 bounds=region, batch_size=b, device=self.device
             )
 
-            # Collision radii for placement (use max half_size + margin)
+            # Collision radii for placement (max footprint radius + margin; cubes are z-rotated, so use the half diagonal)
             cfg = self.domain_randomization_config
             collision_margin = 0.01
-            itemA_radius = cfg.itemA_half_size_range[1] + collision_margin
+            itemA_radius = cfg.itemA_half_size_range[1] * np.sqrt(2) + collision_margin
             if self.item_type == "cube":
-                itemB_radius = cfg.cube_half_size_range[1] + collision_margin
+                itemB_radius = cfg.cube_half_size_range[1] * np.sqrt(2) + collision_margin
             else:  # can
                 itemB_radius = cfg.can_radius_range[1] + collision_margin
 
@@ -371,7 +377,7 @@ class Stack(DefaultCameraEnv):
             qs = randomization.random_quaternions(b, lock_x=True, lock_y=True)
             self.itemA.set_pose(Pose.create_from_pq(itemA_xyz, qs))
 
-            # Set itemB pose (green base)
+            # Set itemB pose (blue base)
             itemB_xyz = torch.zeros((b, 3))
             itemB_xyz[:, :2] = spawn_center[env_idx, :2] + itemB_xy_offset
             itemB_xyz[:, 2] = self.itemB_half_sizes[env_idx]

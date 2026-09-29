@@ -121,6 +121,8 @@ class Args:
     parts, dark motors), 'random' = per-episode random color (needs env_domain_randomization)"""
     shadows: bool = False
     """if toggled, the angled light casts shadows and policy cameras use the 'default' shader (slower rendering)"""
+    randomize_item_color: Optional[bool] = None
+    """per-env random item colors (needs env_domain_randomization). None keeps the task default (False)"""
 
     # Algorithm specific arguments
     total_timesteps: int = 1_500_000
@@ -693,6 +695,8 @@ if __name__ == "__main__":
         dr_config["table_color_mode"] = args.table_color
     if args.robot_color != "black":
         dr_config["robot_color"] = {"white": None, "random": "random"}[args.robot_color]
+    if args.randomize_item_color is not None:
+        dr_config["randomize_item_color"] = args.randomize_item_color
     if args.shadows:
         dr_config["light_shadows"] = True
         # The default "minimal" sensor shader does not render shadows
