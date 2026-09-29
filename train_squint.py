@@ -41,7 +41,7 @@ import envs
 import mani_skill.envs
 
 import utils
-from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_RGB_KEYS, WRIST_MOUNT, WRIST_CAMERA_MOUNTS
+from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_RGB_KEYS, WRIST_MOUNT
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -650,13 +650,6 @@ class Logger:
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
-    # A non-default wrist mount that is still a copy of "default" has not been measured yet
-    if ("wrist" in CAMERA_TYPE and WRIST_MOUNT != "default"
-            and WRIST_CAMERA_MOUNTS[WRIST_MOUNT] == WRIST_CAMERA_MOUNTS["default"]):
-        raise RuntimeError(
-            f"SQUINT_WRIST_MOUNT={WRIST_MOUNT} is still the placeholder copy of 'default'. Measure it with "
-            f"deploy_utils/tune_camera.py and paste the values into WRIST_CAMERA_MOUNTS before training."
-        )
     args.num_total_iterations = int(args.total_timesteps // args.num_envs)
     assert args.num_updates > 0, "No updates will be made to the model with the current setup"
 

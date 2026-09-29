@@ -26,6 +26,7 @@ python -u deploy.py \
     --checkpoint="$CHECKPOINT" \
     --env_id=SO101LiftCube-v1 \
     --policy_image_size=16 \
+    --robot_color=white \
     --debug \
     --record_dir="$RECORD_DIR" \
     "$@"

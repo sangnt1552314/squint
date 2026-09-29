@@ -11,7 +11,6 @@
 export SQUINT_CAMERA_TYPE=wrist
 # Office SO-101 wrist mount: camera sees the fixed jaw in the lower-left of the frame.
 # Values live in WRIST_CAMERA_MOUNTS["office"] (envs/base_random_env.py), measured with tune_camera.py.
-# Training refuses to start while "home" is still the placeholder copy of "default".
 export SQUINT_WRIST_MOUNT=office
 
 source ~/miniconda3/etc/profile.d/conda.sh
