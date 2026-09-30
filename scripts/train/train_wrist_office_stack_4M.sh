@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:h100-96:1
 #SBATCH --mem=64G
 #SBATCH --output=squint-stack-cube-dr-wrist-office-%j.out
-#SBATCH --time=04:00:00
+#SBATCH --time=06:00:00
 
 # Stack task: pick the red cube (itemA, 1-5 cm) and place it on the larger blue cube (itemB, 4-6 cm).
 # Sizes live in StackRandomizationConfig (envs/stack.py).
