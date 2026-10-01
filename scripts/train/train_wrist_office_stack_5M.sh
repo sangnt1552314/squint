@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:h100-96:1
 #SBATCH --mem=64G
 #SBATCH --output=squint-stack-cube-dr-wrist-office-%j.out
-#SBATCH --time=06:00:00
+#SBATCH --time=10:00:00
 
 # Stack task: pick the red cube (itemA, 1-5 cm) and place it on the larger blue cube (itemB, 4-6 cm).
 # Sizes live in StackRandomizationConfig (envs/stack.py).
@@ -29,8 +29,8 @@ echo "SQUINT_CAMERA_TYPE=${SQUINT_CAMERA_TYPE} SQUINT_WRIST_MOUNT=${SQUINT_WRIST
 # Item colors: kept fixed (red itemA, blue itemB); set --randomize_item_color=True for random colors
 python -u train_squint.py \
     --env_id=SO101StackCube-v1 \
-    --exp_name=stack_cube_dr_wrist_office_table_random_shadows_4M \
-    --total_timesteps=4000000 \
+    --exp_name=stack_cube_dr_wrist_office_table_random_shadows_3M \
+    --total_timesteps=5000000 \
     --remove_overlay \
     --table_color=random \
     --shadows \
