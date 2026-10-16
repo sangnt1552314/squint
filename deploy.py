@@ -35,6 +35,7 @@ import numpy as np
 import torch
 import tyro
 import cv2
+import sapien
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
@@ -87,6 +88,9 @@ class Args:
     """HxW of the image fed to the policy (must match --image_size used in training)"""
     robot_color: Literal["black", "white"] = "black"
     """sim robot color for the --debug overlay (match training's --robot_color); 'white' = URDF default"""
+    sim_background_overlay: bool = False
+    """If True, the --debug sim view replaces the background with the black overlay (as in training without
+    --remove_overlay). False renders the raw sim scene (table, floor) so it is easier to compare with real."""
 
     # Wandb checkpoint download settings (only used when checkpoint='wandb')
     wandb_entity: Optional[str] = None  # CHANGE THIS: your wandb username/entity
@@ -191,6 +195,40 @@ def _label(img: np.ndarray, text: str) -> np.ndarray:
     return img
 
 
+DEBUG_HIDDEN_OBJECTS = ("item", "itemA", "itemB", "bin")
+
+
+def hide_task_objects(sim_env):
+    """Hide sim task objects (cubes, bins) in the debug render.
+
+    Their sim poses are random and never synced to the real scene, so showing them
+    is misleading. Only the robot is synced. Re-applied every frame since a reset
+    with reconfiguration rebuilds the actors.
+    """
+    base = sim_env.unwrapped
+    for attr in DEBUG_HIDDEN_OBJECTS:
+        actor = getattr(base, attr, None)
+        if actor is None:
+            continue
+        for obj in actor._objs:
+            render_body = obj.find_component_by_type(sapien.render.RenderBodyComponent)
+            if render_body is not None:
+                render_body.visibility = 0
+
+
+def sync_sim_to_real(sim_env, real_env):
+    """Pose the sim robot exactly at the real qpos and move the wrist camera with it.
+
+    Does not step physics: a sim step would drive the joints toward the controller target
+    (e.g. a gripper commanded closed but blocked by a real cube), so the sim would drift
+    away from what the real robot actually reads.
+    """
+    base = sim_env.unwrapped
+    base.agent.robot.set_qpos(real_env.agent.robot.qpos)
+    if getattr(base, "wrist_camera_mount", None) is not None:
+        base._update_wrist_camera_pose()
+
+
 def build_debug_view(sim_env, real_env, cell_size: int = 192) -> np.ndarray:
     """Build one 'real | sim | overlay' row per policy camera, stacked vertically.
 
@@ -198,6 +236,7 @@ def build_debug_view(sim_env, real_env, cell_size: int = 192) -> np.ndarray:
         row 0: wrist_camera  real | sim | overlay
         row 1: third_camera  real | sim | overlay
     """
+    hide_task_objects(sim_env)
     real_obs = real_env.unwrapped.get_obs()["sensor_data"]
     sim_obs = sim_env.unwrapped.get_obs()["sensor_data"]
 
@@ -419,8 +458,10 @@ def main(args: Args):
         control_mode=args.control_mode,
         sensor_configs=dict(width=args.image_size, height=args.image_size)
     )
+    dr_config = dict(apply_overlay=args.sim_background_overlay)
     if args.robot_color == "white":
-        env_kwargs["domain_randomization_config"] = dict(robot_color=None)
+        dr_config["robot_color"] = None
+    env_kwargs["domain_randomization_config"] = dr_config
 
     sim_env = gym.make(args.env_id, **env_kwargs)
     # Same wrapper as training: one obs key per policy camera, selected by name
@@ -565,8 +606,7 @@ def main(args: Args):
                         recorder.push(frame)
 
                 if args.debug:
-                    # Step sim env with zero action to update the mounted cameras (qpos already synced)
-                    sim_env.step(np.zeros_like(scaled_action))
+                    sync_sim_to_real(sim_env, real_env)
 
                     im_debug.set_data(build_debug_view(sim_env, real_env))
                     fig.canvas.draw()

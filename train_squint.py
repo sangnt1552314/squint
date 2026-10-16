@@ -41,7 +41,7 @@ import envs
 import mani_skill.envs
 
 import utils
-from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_RGB_KEYS, WRIST_MOUNT
+from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_RGB_KEYS, SCENE, WRIST_MOUNT
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -540,6 +540,15 @@ def check_checkpoint_camera_config(ckpt, source):
                 f"but the current mount is SQUINT_WRIST_MOUNT={WRIST_MOUNT}. "
                 f"Set SQUINT_WRIST_MOUNT={ckpt_mount} (and use that physical camera mount)."
             )
+    # The scene sets the third camera's pose. Checkpoints before scene presets = "default".
+    if "third" in CAMERA_TYPE:
+        ckpt_scene = ckpt.get("scene", "default")
+        if ckpt_scene != SCENE:
+            raise RuntimeError(
+                f"Checkpoint '{source}' was trained with SQUINT_SCENE={ckpt_scene}, "
+                f"but the current scene is SQUINT_SCENE={SCENE}. "
+                f"Set SQUINT_SCENE={ckpt_scene} (and place the third camera as in that scene)."
+            )
 
 
 class DeployAgent(nn.Module):
@@ -861,7 +870,7 @@ if __name__ == "__main__":
     for mod in [encoder, actor, critic]:
         print(mod)
     print(f"Task: {args.env_id}, Control mode: {envs.unwrapped._control_mode}")
-    print(f"Camera type: {CAMERA_TYPE}, policy cameras: {dict(POLICY_CAMERAS)}, wrist mount: {WRIST_MOUNT}")
+    print(f"Camera type: {CAMERA_TYPE}, policy cameras: {dict(POLICY_CAMERAS)}, wrist mount: {WRIST_MOUNT}, scene: {SCENE}")
     print(f"Observations: {num_views} x {n_obs}, State: {n_state}, Actions: {n_act}")
     print(f"Buffer memory required: {buffer_mem:.2f} GB")
     print(f"Device: {device}")
@@ -996,6 +1005,7 @@ if __name__ == "__main__":
                     'camera_type': CAMERA_TYPE,
                     'rgb_keys': list(POLICY_RGB_KEYS),
                     'wrist_mount': WRIST_MOUNT,
+                    'scene': SCENE,
                 }, model_path)
                 print(f"Step {global_step}: model checkpoint saved to {model_path}")
 

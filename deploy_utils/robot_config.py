@@ -18,6 +18,8 @@ from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERA_NAMES
 # ============================================================================
 # CHANGE THESE: your hardware settings
 # ============================================================================
+# ROBOT_PORT = "/dev/tty.usbmodem5B610366661"        # your robot's serial port
+# ROBOT_ID = "my_follower"    # your calibration file name
 ROBOT_PORT = "/dev/tty.usbmodem5C821064861"        # your robot's serial port
 ROBOT_ID = "home_follower"    # your calibration file name
 
@@ -30,6 +32,8 @@ THIRD_CAMERA_ID = 1
 CAMERA_FPS = 30
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 360
+# CAMERA_WIDTH = 1280
+# CAMERA_HEIGHT = 720
 # ============================================================================
 
 

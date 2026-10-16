@@ -147,6 +147,13 @@ names always match the simulation sensor names.
 In `wrist_third` mode press `c` to switch which camera the trackbars control (or start with
 `--camera=third`), and `p` to print that camera's constants for `envs/base_random_env.py`.
 
+Camera and room presets live in `envs/base_random_env.py` and are picked per run with env vars:
+`SQUINT_WRIST_MOUNT` (the wrist camera on the gripper, `WRIST_CAMERA_MOUNTS`) and `SQUINT_SCENE`
+(desk, floor, walls and the third-person camera, `SCENES`; visible with `--remove_overlay`). For the
+office3 rig (RealSense D435 on a stand in front of the arm, light desk, pale wall on the robot's right) use
+`SQUINT_SCENE=office3 SQUINT_WRIST_MOUNT=office3`, for training and deployment alike. Its colors are matched
+under the `--shadows` shader.
+
 
 Visual reinforcement learning agents are sensitive to slight visual changes. The more we reduce the difference, the better your agent will transfer. 
 We use a table with a black background. In ManiSkill3 simulation, we segment the objects of interest and replace the background with the image 

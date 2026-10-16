@@ -122,6 +122,8 @@ class Stack(DefaultCameraEnv):
     def _load_scene(self, options: dict):
         self.table_scene = TableSceneBuilder(self)
         self.table_scene.build()
+        # Desk top, floor and walls of the scene (SQUINT_SCENE), recolored per the DR config
+        self._load_background()
 
         if self.item_type not in ["cube", "can"]:
             raise NotImplementedError(f"Unknown item_type: {self.item_type}")

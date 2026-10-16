@@ -133,10 +133,8 @@ class Lift(DefaultCameraEnv):
         # where the 0, 0, 0 position is the center of the table
         self.table_scene = TableSceneBuilder(self)
         self.table_scene.build()
-        # Table spans x in ~[0.01, 1.22], y in ~[-1.21, 1.21] after the table_pose offset below;
-        # floor is at -table height
-        self._randomize_background(table_center_xy=[0.617, 0.0], table_half_size_xy=[0.6, 1.2],
-                                   floor_z=-0.9196429)
+        # Desk top, floor and walls of the scene (SQUINT_SCENE), recolored per the DR config
+        self._load_background()
 
 
         if self.item_type not in ["cube", "can"]:

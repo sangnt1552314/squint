@@ -67,12 +67,55 @@ WRIST_CAMERA_MOUNTS = {
     "office": dict(pos=(-0.011, 0.049, -0.060), rot_deg=(-95, 93, -30), fov_deg=74),
     # Home SO-101 wrist camera: sees the fixed jaw in the lower-left of the frame. Measured with tune_camera.py.
     "home": dict(pos=(-0.005, 0.049, -0.060), rot_deg=(-101, 94, -39), fov_deg=64),
+    # Office SO-101 wrist camera as on the office3 rig (2026-10-16, lerobot-mini-project sim_mujoco/assets/office3).
+    # Fitted to its 1920x1080 frames: the jaws' silhouette in 6 photos (IoU 0.87) + the D435 seen in a 7th, which
+    # pins the far field. A pinhole for the wide-angle lens: fovy 101 (office3's, fitted to the jaws alone) puts far
+    # objects ~17 deg off. Any 16:9 capture mode that scales the full sensor frame sees the same.
+    "office3": dict(pos=(0.0020, 0.0526, -0.0538), rot_deg=(-82.9, 96.0, -27.6), fov_deg=81.8),
 }
 WRIST_MOUNT = os.environ.get("SQUINT_WRIST_MOUNT", "default")
 if WRIST_MOUNT not in WRIST_CAMERA_MOUNTS:
     raise ValueError(
         f"Unknown SQUINT_WRIST_MOUNT: {WRIST_MOUNT}. Options: {list(WRIST_CAMERA_MOUNTS)}"
     )
+
+# =============================================================================
+# SCENE PRESETS
+# The room around the robot (desk top, floor, walls, background props) and the fixed third-person camera.
+# Select per run via the SQUINT_SCENE env var (default: "default" = ManiSkill's table and floor).
+# All of it is visual only: the physical table (TableSceneBuilder) is the same in every scene.
+# Robot base frame: +x forward, +y to the robot's left, table top at z=0. Boxes are center + half_size; rgb is the
+# base color (None keeps ManiSkill's own look unless DR recolors it). roll_deg turns the third camera about its
+# viewing direction.
+# =============================================================================
+SCENES = {
+    "default": dict(
+        third_camera=dict(pos=(0.6, 0.3, 0.3), target=(0.3, 0.0, 0.05), fov_deg=60, roll_deg=0.0),
+        desk=dict(x=(0.017, 1.217), y=(-1.2, 1.2), rgb=None),
+        floor=dict(z=-0.9196429, rgb=None),
+    ),
+    # Office rig of 2026-10-16 (lerobot-mini-project sim_mujoco/assets/office3). Third camera: the RealSense D435 on a
+    # stand in front of the arm, office3's pose (fitted to the arm's silhouette in 13 photos; this URDF and the MuJoCo
+    # model office3 was fitted with have identical kinematics) with the D435's 42.5 deg vertical FOV. Room traced on
+    # the D435's photos: the light desk from 4 cm behind the base, its right edge (seen from the robot) 36 cm out, a
+    # pale blue wall beyond it, dark carpet 0.75 m down, the monitor's post behind the desk; white walls ahead and to
+    # the left, as the wrist camera sees them. Colors match the photos under the default lights (DR off) with the
+    # "default" sensor shader (--shadows); the "minimal" shader renders them ~1.5x brighter.
+    "office3": dict(
+        third_camera=dict(pos=(0.3972, -0.0534, 0.5081), target=(0.1840, -0.0685, 0.1700), fov_deg=42.5, roll_deg=1.71),
+        desk=dict(x=(-0.04, 1.25), y=(-0.36, 1.25), rgb=(0.474, 0.444, 0.425)),
+        floor=dict(z=-0.75, rgb=(0.056, 0.06, 0.056)),
+        background=(
+            dict(name="wall_right", center=(0.0, -0.44, 0.0), half_size=(3.0, 0.01, 1.5), rgb=(0.32, 0.58, 0.765)),
+            dict(name="wall_front", center=(1.6, 0.0, 0.0), half_size=(0.01, 3.0, 1.5), rgb=(0.95, 0.95, 0.95)),
+            dict(name="wall_left", center=(0.0, 1.4, 0.0), half_size=(3.0, 0.01, 1.5), rgb=(0.95, 0.95, 0.95)),
+            dict(name="monitor_post", center=(-0.25, -0.03, -0.2), half_size=(0.018, 0.018, 0.55), rgb=(0.11, 0.26, 0.35)),
+        ),
+    ),
+}
+SCENE = os.environ.get("SQUINT_SCENE", "default")
+if SCENE not in SCENES:
+    raise ValueError(f"Unknown SQUINT_SCENE: {SCENE}. Options: {list(SCENES)}")
 
 from dataclasses import asdict, dataclass
 from typing import Optional, Sequence, Union
@@ -136,16 +179,16 @@ class RandomizationConfig:
 
     # === Background randomization (only visible when apply_overlay=False) ===
     table_color_mode: str = "none"
-    """Table top color per env: "none" (default ManiSkill table), "wood" (random wood shades
+    """Table top color per env: "none" (the scene's own desk, SQUINT_SCENE), "wood" (random wood shades
     from table_wood_colors) or "random" (any RGB within background_color_range)."""
     table_wood_colors: Sequence[Sequence[float]] = ((0.36, 0.22, 0.12), (0.80, 0.62, 0.42))
     """(dark, light) wood RGB; each env's table is a random shade between the two (dark walnut -> light oak)."""
     table_color_noise: float = 0.03
     """Max per-channel RGB noise on top of the wood shade (subtle tint variation)."""
     randomize_floor_color: bool = False
-    """Whether to cover the floor with a randomly colored patch (per-env)."""
+    """Whether to give the floor (and the scene's walls and props) random colors (per-env)."""
     background_color_range: Sequence[float] = (0.0, 1.0)
-    """Per-channel RGB range for floor colors and table_color_mode="random"."""
+    """Per-channel RGB range for floor / wall colors and table_color_mode="random"."""
 
     # === Third-person camera settings (only used by ThirdCameraEnv) ===
     third_camera_pos_noise: Sequence[float] = (0.025, 0.025, 0.025)
@@ -285,34 +328,48 @@ class BaseRandomEnv(BaseEnv):
             patch = builder.build_kinematic(name=f"{name}-{i}")
             self.remove_from_state_dict_registry(patch)
 
-    def _randomize_background(self, table_center_xy: Sequence[float], table_half_size_xy: Sequence[float],
-                              floor_z: float):
-        """Recolor table top and/or floor per env according to the config."""
-        if not self.domain_randomization:
-            return
+    def _load_background(self):
+        """Desk top, floor, walls and props of the scene (SCENES), recolored per env according to the config.
+
+        Call right after TableSceneBuilder.build(). The default scene keeps ManiSkill's table and floor and only
+        covers them when table_color_mode / randomize_floor_color ask for it; a scene with its own colors always
+        covers them.
+        """
+        scene = SCENES[SCENE]
         config = self.domain_randomization_config
         if config.table_color_mode not in ("none", "wood", "random"):
             raise ValueError(f"Unknown table_color_mode: {config.table_color_mode}. Use 'none', 'wood' or 'random'")
-        if config.table_color_mode != "none":
-            if config.table_color_mode == "wood":
-                # Wood tones only: interpolate dark -> light wood, plus a small tint
-                dark, light = (np.asarray(c, dtype=np.float64) for c in config.table_wood_colors)
-                t = self._batched_episode_rng.uniform(0.0, 1.0, size=(1,))
-                noise = self._batched_episode_rng.uniform(-config.table_color_noise, config.table_color_noise, size=(3,))
-                table_colors = np.clip(dark + t * (light - dark) + noise, 0.0, 1.0)
-            else:
-                lo, hi = config.background_color_range
-                table_colors = self._batched_episode_rng.uniform(lo, hi, size=(3,))
+        lo, hi = config.background_color_range
+
+        desk = scene["desk"]
+        table_colors = None
+        if self.domain_randomization and config.table_color_mode == "wood":
+            # Wood tones only: interpolate dark -> light wood, plus a small tint
+            dark, light = (np.asarray(c, dtype=np.float64) for c in config.table_wood_colors)
+            t = self._batched_episode_rng.uniform(0.0, 1.0, size=(1,))
+            noise = self._batched_episode_rng.uniform(-config.table_color_noise, config.table_color_noise, size=(3,))
+            table_colors = np.clip(dark + t * (light - dark) + noise, 0.0, 1.0)
+        elif self.domain_randomization and config.table_color_mode == "random":
+            table_colors = self._batched_episode_rng.uniform(lo, hi, size=(3,))
+        elif desk["rgb"] is not None:
+            table_colors = np.tile(desk["rgb"], (self.num_envs, 1))
+        if table_colors is not None:
             # Thin patch whose top sits 0.5mm above the table surface (z=0)
+            (x0, x1), (y0, y1) = desk["x"], desk["y"]
             self._build_color_patches(
-                "table_patch", [*table_center_xy, 0.0], [*table_half_size_xy, 0.0005], table_colors
+                "table_patch", [(x0 + x1) / 2, (y0 + y1) / 2, 0.0], [(x1 - x0) / 2, (y1 - y0) / 2, 0.0005], table_colors
             )
-        if config.randomize_floor_color:
-            lo, hi = config.background_color_range
-            floor_colors = self._batched_episode_rng.uniform(lo, hi, size=(3,))
-            self._build_color_patches(
-                "floor_patch", [0.0, 0.0, floor_z + 0.001], [5.0, 5.0, 0.0005], floor_colors
-            )
+
+        floor = dict(name="floor_patch", center=(0.0, 0.0, scene["floor"]["z"] + 0.001), half_size=(5.0, 5.0, 0.0005),
+                     rgb=scene["floor"]["rgb"])
+        for box in (floor, *scene.get("background", ())):
+            if self.domain_randomization and config.randomize_floor_color:
+                colors = self._batched_episode_rng.uniform(lo, hi, size=(3,))
+            elif box["rgb"] is not None:
+                colors = np.tile(box["rgb"], (self.num_envs, 1))
+            else:
+                continue
+            self._build_color_patches(box["name"], box["center"], box["half_size"], colors)
 
     def _load_camera_mount(self):
         """Create camera mount actors for pose randomization."""
@@ -525,10 +582,11 @@ class ThirdCameraEnv(BaseRandomEnv):
     # Sim sensor name this camera is registered under
     THIRD_CAMERA_NAME = "base_camera"
 
-    # Default camera position and target
-    DEFAULT_CAMERA_POS = [0.6, 0.3, 0.3]
-    DEFAULT_CAMERA_TARGET = [0.3, 0, 0.05]
-    DEFAULT_CAMERA_FOV = np.deg2rad(60)  # 60 degrees
+    # Camera position, target, vertical FOV and roll about the viewing direction, from the scene preset (SCENES)
+    DEFAULT_CAMERA_POS = list(SCENES[SCENE]["third_camera"]["pos"])
+    DEFAULT_CAMERA_TARGET = list(SCENES[SCENE]["third_camera"]["target"])
+    DEFAULT_CAMERA_FOV = np.deg2rad(SCENES[SCENE]["third_camera"]["fov_deg"])
+    DEFAULT_CAMERA_ROLL = np.deg2rad(SCENES[SCENE]["third_camera"]["roll_deg"])
 
     def __init__(
         self,
@@ -574,6 +632,11 @@ class ThirdCameraEnv(BaseRandomEnv):
 
         config = self.domain_randomization_config
 
+        # Fixed roll about the viewing direction (the camera's x axis)
+        roll = Pose.create_from_pq(
+            q=common.to_tensor(euler2quat(self.DEFAULT_CAMERA_ROLL, 0, 0), device=self.device).float().expand(n, -1)
+        )
+
         if not self.domain_randomization:
             # Return static pose
             static_pose = sapien_utils.look_at(
@@ -581,8 +644,8 @@ class ThirdCameraEnv(BaseRandomEnv):
                 target=self.base_camera_settings["target"],
             )
             # raw_pose may have shape [1, 1, 7] or [1, 7], squeeze to [7] then expand to [n, 7]
-            pose_tensor = static_pose.raw_pose.squeeze()
-            return Pose.create(pose_tensor.unsqueeze(0).expand(n, -1))
+            pose_tensor = static_pose.raw_pose.squeeze().to(self.device)
+            return Pose.create(pose_tensor.unsqueeze(0).expand(n, -1)) * roll
 
         # Convert to tensors if needed
         pos = common.to_tensor(self.base_camera_settings["pos"], device=self.device)
@@ -607,7 +670,7 @@ class ThirdCameraEnv(BaseRandomEnv):
             device=self.device,
         )
 
-        return poses
+        return poses * roll
 
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         """Initialize episode with randomized camera pose."""

@@ -16,7 +16,7 @@ from mani_skill.utils.structs.pose import Pose
 from pathlib import Path
 
 
-@register_agent()
+@register_agent(override=True)
 class SO101(BaseAgent):
     uid = "so101"
 

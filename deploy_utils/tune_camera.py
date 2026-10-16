@@ -35,7 +35,7 @@ from mani_skill.utils import sapien_utils
 from mani_skill.utils.structs import Pose
 
 import utils
-from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_CAMERA_NAMES, WRIST_MOUNT
+from envs.base_random_env import CAMERA_TYPE, POLICY_CAMERAS, POLICY_CAMERA_NAMES, SCENE, WRIST_MOUNT
 
 from deploy_utils.manipulator import LeRobotRealAgent
 from deploy_utils.robot_config import create_real_robot
@@ -65,8 +65,8 @@ class LiveCameraTuner:
         # Per-role camera parameters (overwritten by sim extraction)
         # wrist: pose relative to gripper_link
         self.wrist = dict(x=0.0, y=0.0, z=0.0, roll=0.0, pitch=0.0, yaw=0.0, fov=71.0)
-        # third: world-frame eye + look-at target
-        self.third = dict(ex=0.6, ey=0.3, ez=0.3, tx=0.3, ty=0.0, tz=0.05, fov=60.0)
+        # third: world-frame eye + look-at target (+ roll about the viewing direction, from the scene preset)
+        self.third = dict(ex=0.6, ey=0.3, ez=0.3, tx=0.3, ty=0.0, tz=0.05, fov=60.0, roll=0.0)
 
         self._last_fov = {}
         self._fov_pending = False
@@ -149,6 +149,7 @@ class LiveCameraTuner:
                 ex=float(eye[0]), ey=float(eye[1]), ez=float(eye[2]),
                 tx=float(tgt[0]), ty=float(tgt[1]), tz=float(tgt[2]),
                 fov=float(np.degrees(env.DEFAULT_CAMERA_FOV)),
+                roll=float(np.degrees(env.DEFAULT_CAMERA_ROLL)),
             )
 
     # --- Real robot ---
@@ -186,7 +187,8 @@ class LiveCameraTuner:
             t = self.third
             pose = sapien_utils.look_at(eye=[t["ex"], t["ey"], t["ez"]],
                                         target=[t["tx"], t["ty"], t["tz"]])
-            env.camera_mount.set_pose(Pose.create(pose.raw_pose.squeeze().unsqueeze(0)))
+            roll = Pose.create_from_pq(q=torch.tensor([euler2quat(np.radians(t["roll"]), 0, 0)], dtype=torch.float32))
+            env.camera_mount.set_pose(Pose.create(pose.raw_pose.squeeze().unsqueeze(0)) * roll)
 
         if env.gpu_sim_enabled:
             env.scene._gpu_apply_all()
@@ -343,15 +345,16 @@ class LiveCameraTuner:
                   f'rot_deg=({w["roll"]:.1f}, {w["pitch"]:.1f}, {w["yaw"]:.1f}), fov_deg={w["fov"]:.1f}),')
         else:
             t = self.third
-            print("Third camera params for ThirdCameraEnv (envs/base_random_env.py):")
-            print(f"  DEFAULT_CAMERA_POS = [{t['ex']:.4f}, {t['ey']:.4f}, {t['ez']:.4f}]")
-            print(f"  DEFAULT_CAMERA_TARGET = [{t['tx']:.4f}, {t['ty']:.4f}, {t['tz']:.4f}]")
-            print(f"  DEFAULT_CAMERA_FOV = np.deg2rad({t['fov']:.1f})")
+            print(f"Third camera of the scene (paste into SCENES[\"{SCENE}\"] in envs/base_random_env.py, "
+                  f"current SQUINT_SCENE={SCENE}):")
+            print(f"  third_camera=dict(pos=({t['ex']:.4f}, {t['ey']:.4f}, {t['ez']:.4f}), "
+                  f"target=({t['tx']:.4f}, {t['ty']:.4f}, {t['tz']:.4f}), fov_deg={t['fov']:.1f}, roll_deg={t['roll']:.2f}),")
         print(f"{'='*70}\n")
 
     def run(self):
         roles = list(dict.fromkeys(self.roles.values()))
-        print(f"\nCAMERA_TYPE={CAMERA_TYPE}, policy cameras: {dict(POLICY_CAMERAS)}, SQUINT_WRIST_MOUNT={WRIST_MOUNT}")
+        print(f"\nCAMERA_TYPE={CAMERA_TYPE}, policy cameras: {dict(POLICY_CAMERAS)}, SQUINT_WRIST_MOUNT={WRIST_MOUNT}, "
+              f"SQUINT_SCENE={SCENE}")
         print("\nControls:")
         print(f"  c  - Switch tuned camera (available: {roles})")
         print("  p  - Print current camera parameters")
