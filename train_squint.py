@@ -132,6 +132,11 @@ class Args:
     can_half_height_range: Optional[tuple[float, float]] = None
     """(min, max) half height in m of the can / cylinder, like can_radius_range. None keeps the task default
     (Lift: 0.025-0.061)"""
+    spawn_box_pos: Optional[tuple[float, float]] = None
+    """(x, y) in m of the centre of the square the objects spawn in, from the robot base. None keeps the task
+    default (0.3, 0.0)"""
+    spawn_box_half_size: Optional[float] = None
+    """half side in m of that square. None keeps the task default (0.1)"""
 
     # Algorithm specific arguments
     total_timesteps: int = 1_500_000
@@ -703,6 +708,9 @@ if __name__ == "__main__":
     if args.control_mode is not None:
         env_kwargs["control_mode"] = args.control_mode
         eval_env_kwargs["control_mode"] = args.control_mode
+    for key in ("spawn_box_pos", "spawn_box_half_size"):
+        if getattr(args, key) is not None:
+            env_kwargs[key] = eval_env_kwargs[key] = getattr(args, key)
     if args.env_domain_randomization:
         env_kwargs["domain_randomization"] = True
         eval_env_kwargs["domain_randomization"] = True
