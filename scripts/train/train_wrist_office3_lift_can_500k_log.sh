@@ -1,15 +1,17 @@
 #!/bin/bash
-#SBATCH --job-name=squint-lift-cube-dr-wrist-office3-log
+#SBATCH --job-name=squint-lift-cylinder-dr-wrist-office3-log
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:h100-96:1
 #SBATCH --mem=64G
-#SBATCH --output=squint-lift-cube-dr-wrist-office3-log-%j.out
+#SBATCH --output=squint-lift-cylinder-dr-wrist-office3-log-%j.out
 #SBATCH --time=02:00:00
 
-# Lift task: pick up the cube and lift it. 500k steps.
-# Same as train_wrist_office3_lift_500k.sh, but the log shows what is running: timestamped setup stages (env and
-# scene creation, first render, compile), a progress line every --log_freq steps (step, SPS, ETA, return, success,
-# losses) instead of the tqdm bar, and each evaluation's result.   tail -f squint-lift-cube-dr-wrist-office3-log-<jobid>.out
+# Lift task: pick up the cylinder (upright) and lift it. 500k steps.
+# The real office3 cylinder is 3 cm across and 3 cm tall; training cylinders are 2-5 cm across and 2-5 cm tall
+# (Lift's default is 2.8-6.6 cm across, 5-12.2 cm tall, which never gets as short as the real one).
+# The log shows what is running: timestamped setup stages (env and scene creation, first render, compile), a progress
+# line every --log_freq steps (step, SPS, ETA, return, success, losses) instead of the tqdm bar, and each evaluation's
+# result.   tail -f squint-lift-cylinder-dr-wrist-office3-log-<jobid>.out
 
 # Wrist camera ONLY (single policy view, obs key "rgb").
 # Options: wrist | third | wrist_third. Deploy with the same value.
@@ -31,11 +33,14 @@ echo "git: $(git log -1 --format='%h %s' 2>/dev/null) $(git status --porcelain 2
 
 # Table top: random color per env (any RGB)
 # Shadows: angled light casts shadows, cameras use the slower "default" shader (the office3 colors are matched to it)
+# Cylinder size in m: radius 0.01-0.025 (2-5 cm across), half height 0.01-0.025 (2-5 cm tall)
 python -u train_squint.py \
-    --env_id=SO101LiftCube-v1 \
-    --exp_name=lift_cube_dr_wrist_office3_table_random_shadows_500k_log \
+    --env_id=SO101LiftCan-v1 \
+    --exp_name=lift_cylinder_dr_wrist_office3_table_random_shadows_500k_log \
     --total_timesteps=500000 \
     --log_freq=10000 \
+    --can_radius_range 0.01 0.025 \
+    --can_half_height_range 0.01 0.025 \
     --remove_overlay \
     --table_color=random \
     --shadows \

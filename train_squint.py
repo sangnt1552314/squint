@@ -126,6 +126,12 @@ class Args:
     """if toggled, the angled light casts shadows and policy cameras use the 'default' shader (slower rendering)"""
     randomize_item_color: Optional[bool] = None
     """per-env random item colors (needs env_domain_randomization). None keeps the task default (False)"""
+    can_radius_range: Optional[tuple[float, float]] = None
+    """(min, max) radius in m of the can / cylinder, uniform per env (needs env_domain_randomization; the middle
+    otherwise). None keeps the task default (Lift: 0.014-0.033)"""
+    can_half_height_range: Optional[tuple[float, float]] = None
+    """(min, max) half height in m of the can / cylinder, like can_radius_range. None keeps the task default
+    (Lift: 0.025-0.061)"""
 
     # Algorithm specific arguments
     total_timesteps: int = 1_500_000
@@ -709,6 +715,10 @@ if __name__ == "__main__":
         dr_config["robot_color"] = {"white": None, "random": "random"}[args.robot_color]
     if args.randomize_item_color is not None:
         dr_config["randomize_item_color"] = args.randomize_item_color
+    if args.can_radius_range is not None:
+        dr_config["can_radius_range"] = args.can_radius_range
+    if args.can_half_height_range is not None:
+        dr_config["can_half_height_range"] = args.can_half_height_range
     if args.shadows:
         dr_config["light_shadows"] = True
         # The default "minimal" sensor shader does not render shadows
