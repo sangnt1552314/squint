@@ -106,10 +106,12 @@ SCENES = {
         desk=dict(x=(-0.04, 1.25), y=(-0.36, 1.25), rgb=(0.474, 0.444, 0.425)),
         floor=dict(z=-0.75, rgb=(0.056, 0.06, 0.056)),
         background=(
-            dict(name="wall_right", center=(0.0, -0.44, 0.0), half_size=(3.0, 0.01, 1.5), rgb=(0.32, 0.58, 0.765)),
+            # The angled light comes from the robot's right and behind (--shadows): the right wall and the post end
+            # just above the desk top, all of them the third camera sees, so they cast no shadow on the desk.
+            dict(name="wall_right", center=(0.0, -0.44, -0.36), half_size=(3.0, 0.01, 0.39), rgb=(0.32, 0.58, 0.765)),
             dict(name="wall_front", center=(1.6, 0.0, 0.0), half_size=(0.01, 3.0, 1.5), rgb=(0.95, 0.95, 0.95)),
             dict(name="wall_left", center=(0.0, 1.4, 0.0), half_size=(3.0, 0.01, 1.5), rgb=(0.95, 0.95, 0.95)),
-            dict(name="monitor_post", center=(-0.25, -0.03, -0.2), half_size=(0.018, 0.018, 0.55), rgb=(0.11, 0.26, 0.35)),
+            dict(name="monitor_post", center=(-0.25, -0.03, -0.35), half_size=(0.018, 0.018, 0.40), rgb=(0.11, 0.26, 0.35)),
         ),
     ),
 }
@@ -312,18 +314,21 @@ class BaseRandomEnv(BaseEnv):
             self.scene.add_directional_light([1, 1, -1], [1, 1, 1], **shadow_kwargs)
             self.scene.add_directional_light([0, 0, -1], [1, 1, 1])
 
-    def _build_color_patches(self, name: str, p: Sequence[float], half_size: Sequence[float], colors: np.ndarray):
-        """Build a visual-only box per env with the given per-env RGB colors (e.g. to recolor table/floor).
+    def _build_color_patches(self, name: str, boxes: Sequence[tuple]):
+        """Build one visual-only actor per env holding the given boxes, each (center, half_size, per-env RGB colors)
+        (e.g. to recolor table/floor). One actor per env, not per box: building actors dominates env creation.
 
         Patches are not kept by the greenscreen, so they only show when apply_overlay=False.
         """
         for i in range(self.num_envs):
             builder = self.scene.create_actor_builder()
-            builder.add_box_visual(
-                half_size=half_size,
-                material=sapien.render.RenderMaterial(base_color=[*colors[i], 1]),
-            )
-            builder.initial_pose = sapien.Pose(p=p)
+            for center, half_size, colors in boxes:
+                builder.add_box_visual(
+                    pose=sapien.Pose(p=center),
+                    half_size=half_size,
+                    material=sapien.render.RenderMaterial(base_color=[*colors[i], 1]),
+                )
+            builder.initial_pose = sapien.Pose()
             builder.set_scene_idxs([i])
             patch = builder.build_kinematic(name=f"{name}-{i}")
             self.remove_from_state_dict_registry(patch)
@@ -353,12 +358,11 @@ class BaseRandomEnv(BaseEnv):
             table_colors = self._batched_episode_rng.uniform(lo, hi, size=(3,))
         elif desk["rgb"] is not None:
             table_colors = np.tile(desk["rgb"], (self.num_envs, 1))
+        boxes = []
         if table_colors is not None:
             # Thin patch whose top sits 0.5mm above the table surface (z=0)
             (x0, x1), (y0, y1) = desk["x"], desk["y"]
-            self._build_color_patches(
-                "table_patch", [(x0 + x1) / 2, (y0 + y1) / 2, 0.0], [(x1 - x0) / 2, (y1 - y0) / 2, 0.0005], table_colors
-            )
+            boxes.append(([(x0 + x1) / 2, (y0 + y1) / 2, 0.0], [(x1 - x0) / 2, (y1 - y0) / 2, 0.0005], table_colors))
 
         floor = dict(name="floor_patch", center=(0.0, 0.0, scene["floor"]["z"] + 0.001), half_size=(5.0, 5.0, 0.0005),
                      rgb=scene["floor"]["rgb"])
@@ -369,7 +373,9 @@ class BaseRandomEnv(BaseEnv):
                 colors = np.tile(box["rgb"], (self.num_envs, 1))
             else:
                 continue
-            self._build_color_patches(box["name"], box["center"], box["half_size"], colors)
+            boxes.append((box["center"], box["half_size"], colors))
+        if boxes:
+            self._build_color_patches("background", boxes)
 
     def _load_camera_mount(self):
         """Create camera mount actors for pose randomization."""

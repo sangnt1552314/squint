@@ -10,7 +10,7 @@ warnings.filterwarnings("ignore", message="Using lock_\\(\\) in a compiled graph
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import math
 import random
@@ -97,6 +97,9 @@ class Args:
     """for benchmarking purposes we want to reconfigure the eval environment each reset to ensure objects are randomized in some tasks"""
     eval_freq: int = 100_000
     """evaluation frequency in terms of global steps"""
+    log_freq: int = 0
+    """if > 0, print a progress line (step, SPS, ETA, returns, losses) every log_freq global steps instead of the
+    tqdm bar: for log files (e.g. SLURM), where the bar doesn't show"""
     save_train_video_freq: Optional[int] = None
     """frequency to save training videos in terms of iterations"""
     control_mode: Optional[str] = None 
@@ -179,6 +182,11 @@ class Args:
 #  Evaluation
 # ─────────────────────────────────────────────────────────────────────────────
 
+def log(msg: str):
+    """Timestamped line, flushed at once so it shows up in log files as it happens."""
+    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+
+
 def evaluate(args, eval_envs, get_action_fn, logger, eval_output_dir, max_episode_steps, global_step, pbar):
     torch.cuda.empty_cache()
     stime = time.perf_counter()
@@ -207,6 +215,8 @@ def evaluate(args, eval_envs, get_action_fn, logger, eval_output_dir, max_episod
     )
     eval_time = time.perf_counter() - stime
     eval_d["time/eval_time"] = eval_time
+    log(f"eval @ step {global_step:,}: success_at_end {eval_d['eval/success_at_end']:.2f}, "
+        f"success_once {eval_d['eval/success_once']:.2f}, return {eval_d['eval/return']:.2f} ({eval_time:.0f} s)")
 
     if args.track and args.capture_video:
         video_files = glob.glob(f"{eval_output_dir}/*.mp4")
@@ -708,10 +718,19 @@ if __name__ == "__main__":
         env_kwargs["domain_randomization_config"] = dict(dr_config)
         eval_env_kwargs["domain_randomization_config"] = dict(dr_config)
 
-    envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1,
+    log(f"{args.env_id}: {args.total_timesteps:,} steps, camera {CAMERA_TYPE}, wrist mount {WRIST_MOUNT}, "
+        f"scene {SCENE}, device {device}")
+    num_train_envs = args.num_envs if not args.evaluate else 1
+    log(f"Creating {num_train_envs} training envs (robot, objects and scene per env; shader "
+        f"{env_kwargs['sensor_configs'].get('shader_pack', 'minimal')}, DR config {dr_config})...")
+    t_start = time.perf_counter()
+    envs = gym.make(args.env_id, num_envs=num_train_envs,
                     reconfiguration_freq=args.reconfiguration_freq, **env_kwargs)
+    log(f"Training envs ready ({time.perf_counter() - t_start:.0f} s). Creating {args.num_eval_envs} eval envs...")
+    t_start = time.perf_counter()
     eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs,
                          reconfiguration_freq=args.eval_reconfiguration_freq, **eval_env_kwargs)
+    log(f"Eval envs ready ({time.perf_counter() - t_start:.0f} s)")
     max_episode_steps = gym_utils.find_max_episode_steps_value(envs)
 
     # Keeps each policy camera in its own obs key (no channel-dim concatenation)
@@ -758,6 +777,7 @@ if __name__ == "__main__":
     if not args.evaluate:
         print("Running training")
         if args.track:
+            log("Starting wandb run...")
             config = vars(args)
             config["env_cfg"] = dict(**env_kwargs, num_envs=args.num_envs, env_id=args.env_id,
                                      reward_mode="normalized_dense", env_horizon=max_episode_steps, partial_reset=args.partial_reset)
@@ -978,11 +998,17 @@ if __name__ == "__main__":
 
     obs_keys = tuple(POLICY_RGB_KEYS) + ("state",)
 
+    log("Resetting envs (first render)...")
     obs, _ = envs.reset(seed=args.seed)
     eval_envs.reset(seed=args.seed)
+    log(f"Training: {args.num_total_iterations:,} iterations x {args.num_envs} envs, random actions until step "
+        f"{args.learning_starts:,}, then {args.num_updates} updates per iteration"
+        + (" (the first ones compile: may stall a few minutes)" if args.compile or args.cudagraphs else "")
+        + f"; eval every {args.eval_freq:,} steps")
 
     global_step = 0
-    pbar = tqdm.tqdm(total=args.total_timesteps, desc="steps")
+    train_start = time.perf_counter()
+    pbar = tqdm.tqdm(total=args.total_timesteps, desc="steps", disable=args.log_freq > 0)
     max_ep_ret = -float("inf")
     avg_returns = deque(maxlen=20)
     desc = ""
@@ -1086,6 +1112,21 @@ if __name__ == "__main__":
         # Increment counters
         pbar.update(args.num_envs)
         global_step += args.num_envs
+
+        # Progress line for log files
+        if args.log_freq > 0 and (global_step // args.log_freq) > ((global_step - args.num_envs) // args.log_freq):
+            elapsed = time.perf_counter() - train_start
+            sps = global_step / elapsed
+            eta = max(args.total_timesteps - global_step, 0) / sps
+            ret = f"{torch.tensor(avg_returns).mean():.2f} (max {max_ep_ret:.2f})" if avg_returns else "n/a"
+            stats = ", ".join(f"{k.split('/')[-1]} {float(d[k]):.3f}"
+                              for k in ("train/success_once", "critic_loss", "actor_loss", "alpha") if k in d)
+            phase = " [random actions]" if global_step <= args.learning_starts else ""
+            log(f"step {global_step:,}/{args.total_timesteps:,} ({100 * global_step / args.total_timesteps:.0f}%) | "
+                f"{sps:.0f} sps | elapsed {timedelta(seconds=int(elapsed))} | ETA {timedelta(seconds=int(eta))} | "
+                f"return {ret}{', ' + stats if stats else ''}{phase}")
+
+    log(f"Training done: {global_step:,} steps in {timedelta(seconds=int(time.perf_counter() - train_start))}")
 
     # Upload final checkpoint to wandb
     if args.save_model:
